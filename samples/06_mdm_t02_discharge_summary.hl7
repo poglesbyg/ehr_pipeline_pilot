@@ -1,0 +1,13 @@
+MSH|^~\&|VISTA TIU|999^PILOT-VAMC.EXAMPLE^DNS|HL7BRIDGE|NAII-PILOT|20261023150000-0500||MDM^T02^MDM_T02|999-TIU-0101|P|2.4|||AL|NE
+EVN|T02|20261023150000-0500
+PID|1||1013579246V135792^^^USVHA&&0363^NI^VA FACILITY ID&200M&L||VETERAN^JAMES^ALAN^JR^^^L||19580314|M
+PV1|1|I|3 NORTH^301^A^999||||1234567893^NGUYEN^LINDA^M^^DR^^^NPI^^^^NPI|||MED|||||||1679576722^OKAFOR^SAMUEL^^^DR^^^NPI^^^^NPI||V999-20261020-01^^^USVHA&&0363^VN^VA FACILITY ID&999&L|||||||||||||||||||||||||20261020081500-0500|20261023140000-0500
+TXA|1|DS^DISCHARGE SUMMARY|TX|20261023143000-0500|1234567893^NGUYEN^LINDA^M^^DR^^^NPI^^^^NPI|||||||TIU-88231|||||AU
+OBX|1|TX|18842-5^Discharge summary^LN||68-year-old male Veteran (Persian Gulf War era, 70% service connected) admitted 10/20 with acute on chronic systolic heart failure.||||||F
+OBX|2|TX|18842-5^Discharge summary^LN||Presented with 3 days of worsening dyspnea and 4 kg weight gain. BNP 1240 pg/mL. Troponin negative.||||||F
+OBX|3|TX|18842-5^Discharge summary^LN||Diuresed with IV furosemide 40 mg twice daily with net negative 5.2 L. Transitioned to oral torsemide 20 mg daily.||||||F
+OBX|4|TX|18842-5^Discharge summary^LN||Creatinine rose to 1.9 mg/dL from baseline 1.3 with diuresis; lisinopril held. Repeat creatinine 1.5 mg/dL on day of discharge.||||||F
+OBX|5|TX|18842-5^Discharge summary^LN||Potassium 5.6 mmol/L on admission on a hemolyzed specimen; repeat 4.7 mmol/L.||||||F
+OBX|6|TX|18842-5^Discharge summary^LN||Hemoglobin A1c 8.9%; metformin continued, endocrinology referral placed.||||||F
+OBX|7|TX|18842-5^Discharge summary^LN||Allergies: penicillin (hives), peanut.||||||F
+OBX|8|TX|18842-5^Discharge summary^LN||Discharge plan: daily weights, 2 g sodium diet, cardiology follow-up in 7 days, BMP in 3 days at CBOC.||||||F

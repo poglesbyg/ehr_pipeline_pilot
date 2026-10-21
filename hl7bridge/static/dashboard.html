@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interop + Clinical AI Pilot</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #14202e; --muted: #5b6b7c; --line: #dfe4ea;
+  --brand: #0b3d6e; --brand-2: #1d6fb8; --accent: #0f8a7e; --warn: #b26a00; --bad: #b42318; --good: #157f3b;
+  --chip: #eef3f8; --code-bg: #0f1923; --code-ink: #d7e3ee; --hl: #ffe9a8;
+  --seg-msh: #7cc4ff; --seg-pid: #ffb86b; --seg-pv1: #b1e07a; --seg-obx: #e9a0ff; --seg-obr: #ff8fa3; --seg-z: #ffd866; --seg-other: #9fb3c8;
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d141c; --panel: #131d28; --ink: #e5edf5; --muted: #93a4b6; --line: #24323f;
+    --brand: #8cc4ff; --brand-2: #5aa9f0; --accent: #3cc2b3; --chip: #1a2836; --hl: #5c4a12;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.45; }
+header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 14px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; color: var(--brand); letter-spacing: -0.01em; }
+header .sub { color: var(--muted); font-size: 12px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--chip); color: var(--muted); border: 1px solid var(--line); }
+.badge.warn { color: var(--warn); }
+.stats { margin-left: auto; display: flex; gap: 18px; flex-wrap: wrap; }
+.stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+nav { display: flex; gap: 4px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+nav button { border: 0; background: none; padding: 10px 14px; font: inherit; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+nav button.on { color: var(--brand); border-color: var(--brand-2); font-weight: 600; }
+main { padding: 16px 20px; max-width: 1500px; margin: 0 auto; }
+.grid { display: grid; gap: 16px; }
+.g-engine { grid-template-columns: 300px minmax(0, 1fr); }
+.g-ai { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+@media (max-width: 1000px) { .g-engine, .g-ai { grid-template-columns: 1fr; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.card h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 6px 10px; font: inherit; cursor: pointer; }
+.btn:hover { border-color: var(--brand-2); }
+.btn.primary { background: var(--brand-2); color: #fff; border-color: var(--brand-2); }
+.samples button { display: flex; width: 100%; text-align: left; justify-content: space-between; margin-bottom: 6px; font-size: 12.5px; }
+textarea, input[type=text], select { width: 100%; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: var(--panel); color: var(--ink); }
+input[type=text] { font: inherit; font-size: 14px; padding: 9px 10px; }
+pre.hl7, pre.json { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 12px; overflow: auto; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; max-height: 420px; }
+pre.hl7 .seg { display: block; white-space: pre; }
+pre.hl7 .seg.hl { background: #3b3410; outline: 1px solid #ffd866; }
+pre.hl7 .sn { font-weight: 700; }
+pre.hl7 .f { cursor: help; border-radius: 3px; }
+pre.hl7 .f:hover { background: #2a4058; }
+pre.hl7 .d { color: #5d7085; }
+.tip { position: fixed; pointer-events: none; background: #111; color: #fff; font-size: 12px; padding: 5px 8px; border-radius: 6px; z-index: 9; display: none; max-width: 320px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
+.st { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; }
+.st.accepted { background: #e3f4e8; color: var(--good); } .st.error { background: #fde8e7; color: var(--bad); }
+.st.rejected { background: #fff1db; color: var(--warn); } .st.duplicate { background: var(--chip); color: var(--muted); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--muted); }
+.res { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; background: var(--chip); border-radius: 6px; font-size: 12px; }
+.answer { font-size: 15px; line-height: 1.65; }
+.answer .cite { display: inline-block; min-width: 20px; text-align: center; font-size: 11px; font-weight: 700; color: #fff; background: var(--brand-2); border-radius: 5px; padding: 0 4px; margin: 0 1px; cursor: pointer; vertical-align: 1px; }
+.answer .cite.ocr { background: var(--warn); }
+.disclaimer { font-size: 12px; color: var(--muted); border-left: 3px solid var(--warn); padding: 4px 10px; margin-top: 12px; }
+.ev { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; cursor: pointer; }
+.ev.on { border-color: var(--brand-2); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand-2) 25%, transparent); }
+.ev .n { font-weight: 700; color: var(--brand-2); margin-right: 6px; }
+.ev .lab { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.trust { font-size: 10.5px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--line); margin-left: 6px; }
+.trust.ocr { color: var(--warn); border-color: var(--warn); }
+.meter { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--good); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; }
+.quar { background: #fff6e5; color: #6b4300; border-radius: 7px; padding: 8px 10px; font-size: 12.5px; margin-top: 8px; }
+@media (prefers-color-scheme: dark) { .quar { background: #3a2a07; color: #ffd27a; } .st.accepted { background: #12351f; } .st.error { background: #3d1513; } .st.rejected { background: #3a2a07; } }
+.suggest button { margin: 0 6px 6px 0; font-size: 12.5px; }
+.lineage { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; margin: 8px 0; }
+.lineage span.node { background: var(--chip); padding: 3px 8px; border-radius: 6px; }
+.empty { color: var(--muted); padding: 20px; text-align: center; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>VistA → FHIR → Grounded Clinical AI</h1>
+    <div class="sub">Interoperability &amp; trustworthy-AI pilot · HL7 v2.x · FHIR R4 / US Core</div>
+  </div>
+  <span class="badge warn">Synthetic data only · not a VA production system</span>
+  <div class="stats" id="stats"></div>
+</header>
+<nav>
+  <button class="on" data-tab="engine">Interface engine</button>
+  <button data-tab="ai">Clinical assistant</button>
+  <button data-tab="fhir">FHIR browser</button>
+</nav>
+<main>
+  <!-- Interface engine -->
+  <section id="tab-engine" class="grid g-engine">
+    <div class="grid" style="align-content:start">
+      <div class="card samples">
+        <h2>Synthetic VistA feeds</h2>
+        <div id="samples"></div>
+        <div class="row" style="margin-top:8px"><button class="btn primary" id="send-all">Send all in order</button></div>
+      </div>
+      <div class="card">
+        <h2>Paste HL7 v2</h2>
+        <textarea id="raw" rows="8" placeholder="MSH|^~\&amp;|..."></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn" id="dry">Dry-run convert</button>
+          <button class="btn primary" id="send">Ingest</button>
+        </div>
+      </div>
+    </div>
+    <div class="grid" style="align-content:start">
+      <div class="card" id="result-card">
+        <h2>Message</h2>
+        <div id="result" class="empty">Send a sample feed to watch it parse, map to FHIR, validate and acknowledge.</div>
+      </div>
+      <div class="card">
+        <h2>Message ledger <span class="muted" style="text-transform:none;letter-spacing:0">(PHI-redacted at rest)</span></h2>
+        <table><thead><tr><th>Received</th><th>Control ID</th><th>Type</th><th>Sender</th><th>Status</th><th>ms</th></tr></thead>
+        <tbody id="ledger"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Clinical assistant -->
+  <section id="tab-ai" class="grid g-ai hidden">
+    <div class="grid" style="align-content:start">
+      <div class="card">
+        <h2>Ask the record</h2>
+        <div class="row" style="margin-bottom:8px">
+          <select id="patient" style="font:inherit;max-width:340px"></select>
+          <span class="muted" id="scope"></span>
+        </div>
+        <form id="ask-form" class="row">
+          <input type="text" id="q" placeholder="e.g. How is kidney function?  (leave blank to summarize)" style="flex:1">
+          <button class="btn primary">Ask</button>
+        </form>
+        <div class="suggest" style="margin-top:10px" id="suggest"></div>
+      </div>
+      <div class="card">
+        <h2>Answer</h2>
+        <div id="answer" class="empty">Ask a question. Every sentence cites its evidence, and each citation traces back to the HL7 segment it came from.</div>
+      </div>
+    </div>
+    <div class="grid" style="align-content:start">
+      <div class="card">
+        <h2>Guardrails</h2>
+        <div id="guard" class="muted">—</div>
+      </div>
+      <div class="card">
+        <h2>Evidence &amp; lineage</h2>
+        <div id="evidence" class="muted">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FHIR browser -->
+  <section id="tab-fhir" class="grid hidden" style="grid-template-columns: 260px minmax(0,1fr)">
+    <div class="card"><h2>Resources</h2><div id="types"></div>
+      <p class="muted" style="font-size:12px;margin-top:12px">REST: <span class="mono">/fhir/metadata</span>, <span class="mono">/fhir/Patient?identifier=</span>, <span class="mono">/fhir/Patient/{id}/$everything</span></p></div>
+    <div class="card"><h2 id="fhir-title">Select a resource type</h2><div id="fhir-list"></div></div>
+  </section>
+</main>
+<div class="tip" id="tip"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = async (path, opts) => { const r = await fetch(path, opts); return r.headers.get("content-type")?.includes("json") ? r.json() : r.text(); };
+
+const FIELDS = {
+  MSH: {3:"Sending Application",4:"Sending Facility",5:"Receiving Application",6:"Receiving Facility",7:"Date/Time of Message",9:"Message Type",10:"Message Control ID",11:"Processing ID",12:"Version ID",15:"Accept Ack Type",16:"Application Ack Type"},
+  EVN: {1:"Event Type Code",2:"Recorded Date/Time"},
+  PID: {1:"Set ID",3:"Patient Identifier List (ICN / DFN)",5:"Patient Name",7:"Date of Birth",8:"Administrative Sex",10:"Race",11:"Patient Address",13:"Phone - Home",14:"Phone - Business",16:"Marital Status",19:"SSN (dropped at boundary)",22:"Ethnic Group",29:"Death Date/Time",30:"Death Indicator"},
+  PV1: {1:"Set ID",2:"Patient Class",3:"Assigned Patient Location",6:"Prior Location",7:"Attending Doctor",8:"Referring Doctor",10:"Hospital Service",17:"Admitting Doctor",19:"Visit Number",36:"Discharge Disposition",44:"Admit Date/Time",45:"Discharge Date/Time"},
+  PV2: {3:"Admit Reason"},
+  AL1: {1:"Set ID",2:"Allergen Type",3:"Allergen Code",4:"Severity",5:"Reaction",6:"Identification Date"},
+  OBR: {1:"Set ID",2:"Placer Order Number",3:"Filler Order Number",4:"Universal Service ID",7:"Observation Date/Time",16:"Ordering Provider",22:"Results Report Date/Time",25:"Result Status"},
+  OBX: {1:"Set ID",2:"Value Type",3:"Observation Identifier (LOINC)",4:"Observation Sub-ID",5:"Observation Value",6:"Units",7:"Reference Range",8:"Abnormal Flags",11:"Result Status",14:"Observation Date/Time"},
+  NTE: {1:"Set ID",3:"Comment"},
+  TXA: {1:"Set ID",2:"Document Type",3:"Content Presentation",4:"Activity Date/Time",5:"Primary Activity Provider",12:"Unique Document Number",17:"Completion Status"},
+  MRG: {1:"Prior Patient Identifier List"},
+  ZEL: {1:"Set ID",2:"Eligibility Code (pilot Z-segment)",3:"Service-Connected %",4:"Veteran Indicator",5:"Period of Service"},
+  MSA: {1:"Acknowledgment Code",2:"Message Control ID",3:"Text Message"},
+  ERR: {3:"HL7 Error Code",4:"Severity",8:"User Message"},
+};
+const SEG_COLOR = n => ({MSH:"--seg-msh",PID:"--seg-pid",PV1:"--seg-pv1",PV2:"--seg-pv1",OBX:"--seg-obx",OBR:"--seg-obr",MSA:"--seg-msh",ERR:"--seg-obr"}[n] || (n[0]==="Z" ? "--seg-z" : "--seg-other"));
+
+function renderHL7(text, highlight) {
+  const counts = {};
+  const lines = text.replace(/\r\n?/g, "\n").split("\n").filter(Boolean);
+  return `<pre class="hl7">${lines.map(line => {
+    const name = line.slice(0, 3); counts[name] = (counts[name] || 0) + 1;
+    const tag = `${name}[${counts[name]}]`;
+    const parts = line.split("|");
+    const fields = parts.slice(1).map((v, i) => {
+      const n = name === "MSH" ? i + 2 : i + 1;
+      const label = FIELDS[name]?.[n];
+      return v === "" ? "" : `<span class="f" data-tip="${esc(`${name}-${n}${label ? " · " + label : ""}`)}">${esc(v)}</span>`;
+    });
+    return `<span class="seg${highlight === tag ? " hl" : ""}"><span class="sn" style="color:var(${SEG_COLOR(name)})">${name}</span><span class="d">|</span>${fields.join('<span class="d">|</span>')}</span>`;
+  }).join("")}</pre>`;
+}
+
+const tip = $("#tip");
+document.addEventListener("mouseover", e => { const t = e.target.closest("[data-tip]"); if (!t) return tip.style.display = "none"; tip.textContent = t.dataset.tip; tip.style.display = "block"; });
+document.addEventListener("mousemove", e => { tip.style.left = (e.clientX + 12) + "px"; tip.style.top = (e.clientY + 14) + "px"; });
+
+// ---- tabs
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  ["engine", "ai", "fhir"].forEach(t => $("#tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
+  if (b.dataset.tab === "ai") loadPatients();
+  if (b.dataset.tab === "fhir") loadTypes();
+});
+
+// ---- stats + ledger
+let ledger = [];
+async function refresh() {
+  const [s, msgs] = await Promise.all([api("/api/stats"), api("/api/messages")]);
+  ledger = msgs;
+  const total = Object.values(s.resources).reduce((a, b) => a + b, 0);
+  $("#stats").innerHTML = [
+    [s.messages.accepted || 0, "accepted"], [(s.messages.error || 0) + (s.messages.rejected || 0), "NAK'd"],
+    [total, "FHIR resources"], [s.evidence_chunks, "evidence chunks"], [s.provider, "model"],
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${l}</span></div>`).join("");
+  $("#ledger").innerHTML = msgs.length ? msgs.map((m, i) => `<tr class="click" data-i="${i}">
+    <td class="mono">${esc(m.received_at.slice(11, 23))}</td><td class="mono">${esc(m.control_id)}</td>
+    <td class="mono">${esc(m.message_type)}</td><td>${esc(m.sender)}</td>
+    <td><span class="st ${m.status}">${m.status}</span></td><td class="mono">${m.elapsed_ms ?? ""}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No messages yet.</td></tr>`;
+  document.querySelectorAll("#ledger tr.click").forEach(tr => tr.onclick = () => showLedger(ledger[tr.dataset.i]));
+}
+
+function showLedger(m) {
+  const refs = JSON.parse(m.resources || "[]");
+  $("#result").className = "";
+  $("#result").innerHTML = `<div class="row" style="margin-bottom:8px"><span class="st ${m.status}">${m.status}</span>
+    <span class="mono">${esc(m.message_type)} · ${esc(m.control_id)}</span><span class="muted">stored copy (redacted)</span></div>
+    ${renderHL7(m.raw_redacted || "")}
+    <h2 style="margin-top:12px">ACK</h2>${renderHL7(m.ack)}
+    ${m.error ? `<p style="color:var(--bad)">${esc(m.error)}</p>` : ""}
+    <h2 style="margin-top:12px">Resources committed</h2>${refs.map(r => `<span class="res mono">${esc(r)}</span>`).join("") || '<span class="muted">none</span>'}`;
+}
+
+function showResult(raw, r) {
+  const created = (r.response?.entry || []).map(e => `<span class="res mono" title="${esc(e.response.status)}">${esc(e.response.location.split("/_history")[0])}</span>`).join("");
+  const planned = (r.bundle?.entry || []).map(e => `<span class="res">${esc(e.request.method)} ${esc(e.resource.resourceType === "Parameters" ? "Patient (FHIRPath Patch)" : e.resource.resourceType)}</span>`).join("");
+  const issues = (r.outcome?.issue || []).map(i => `<div style="color:${i.severity === "error" ? "var(--bad)" : "var(--muted)"}">${esc(i.severity)}: ${esc(i.diagnostics)}${i.location ? ` <span class="mono">(${esc(i.location)})</span>` : ""}</div>`).join("");
+  $("#result").className = "";
+  $("#result").innerHTML = `
+    <div class="row" style="margin-bottom:8px"><span class="st ${r.status}">${r.status}</span>
+      <span class="mono">${esc(r.message_type || "?")} · ${esc(r.control_id || "?")}</span><span class="muted">${r.elapsed_ms} ms</span></div>
+    <div class="lineage"><span class="node">HL7 v2 (ER7)</span>→<span class="node">parse + validate MSH</span>→<span class="node">map → US Core</span>→<span class="node">pre-commit validation</span>→<span class="node">atomic transaction</span>→<span class="node">ACK ${esc(r.ack.split("\r")[1]?.split("|")[1] || "")}</span>→<span class="node">evidence index</span></div>
+    ${renderHL7(raw)}
+    <h2 style="margin-top:12px">ACK returned to sender</h2>${renderHL7(r.ack)}
+    <h2 style="margin-top:12px">Validation</h2>${issues}
+    ${r.warnings?.length ? `<div class="muted">${r.warnings.map(esc).join("<br>")}</div>` : ""}
+    <h2 style="margin-top:12px">${created ? "Resources committed" : "Transaction plan"}</h2>${created || planned || '<span class="muted">none</span>'}
+    ${r.bundle ? `<details style="margin-top:10px"><summary class="muted">FHIR transaction Bundle (${r.bundle.entry.length} entries)</summary><pre class="json">${esc(JSON.stringify(r.bundle, null, 2))}</pre></details>` : ""}`;
+}
+
+async function ingest(raw, dry) {
+  const r = await api(dry ? "/hl7/v2/$convert" : "/hl7/v2", { method: "POST", body: raw });
+  showResult(raw, r); await refresh(); return r;
+}
+
+async function loadSamples() {
+  const names = await api("/api/samples");
+  $("#samples").innerHTML = names.map(n => `<button class="btn" data-n="${esc(n)}"><span>${esc(n.replace(/^\d+_/, "").replace(".hl7", "").replace(/_/g, " "))}</span><span class="muted mono">${esc(n.slice(0, 2))}</span></button>`).join("");
+  document.querySelectorAll("#samples button").forEach(b => b.onclick = async () => {
+    const raw = await api("/api/samples/" + b.dataset.n); $("#raw").value = raw; ingest(raw, false);
+  });
+  $("#send-all").onclick = async () => { for (const n of names) { const raw = await api("/api/samples/" + n); await ingest(raw, false); } };
+}
+$("#dry").onclick = () => ingest($("#raw").value, true);
+$("#send").onclick = () => ingest($("#raw").value, false);
+
+// ---- assistant
+const SUGGEST = ["", "How is kidney function?", "Was the potassium really elevated?", "What did the outside cardiologist find on echo?", "What allergies does the patient have?", "How well controlled is the diabetes?", "Does the patient have a pacemaker?"];
+$("#suggest").innerHTML = SUGGEST.map(q => `<button class="btn" data-q="${esc(q)}">${esc(q || "Summarize patient")}</button>`).join("");
+document.querySelectorAll("#suggest button").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; ask(); });
+
+async function loadPatients() {
+  const ps = await api("/api/patients");
+  const cur = $("#patient").value;
+  $("#patient").innerHTML = ps.length ? ps.map(p => `<option value="${p.id}">${esc(p.name)} · ${esc(p.birthDate || "")} · ICN ${esc(p.icn || "—")}${p.active ? "" : " (merged)"}</option>`).join("")
+    : `<option value="">No patients — ingest the sample feeds first</option>`;
+  if (cur) $("#patient").value = cur;
+}
+
+let lastAnswer = null;
+async function ask(e) {
+  e?.preventDefault();
+  if (!$("#patient").value) await loadPatients();
+  const patient = $("#patient").value; if (!patient) return;
+  $("#answer").innerHTML = '<span class="muted">Retrieving evidence…</span>';
+  const r = await api("/ai/ask", { method: "POST", body: JSON.stringify({ patient, question: $("#q").value }) });
+  if (r.resourceType === "OperationOutcome") { $("#answer").textContent = r.issue[0].diagnostics; return; }
+  lastAnswer = r;
+  const ocr = new Set(r.citations.filter(c => c.trust === "ocr").map(c => c.n));
+  const html = esc(r.answer).replace(/\[(\d+)\]/g, (_, n) => `<span class="cite${ocr.has(+n) ? " ocr" : ""}" data-n="${n}">${n}</span>`);
+  $("#answer").className = "";
+  $("#answer").innerHTML = `<div class="answer">${html}</div><div class="disclaimer">${esc(r.disclaimer)}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">${esc(r.provider)} · retrieval ${r.timing_ms.retrieval} ms · generation ${r.timing_ms.generation} ms · ${r.evidence_considered} evidence chunks considered · audit event recorded</div>`;
+  $("#scope").textContent = r.identity_scope.length > 1 ? `identity spans ${r.identity_scope.length} merged records` : "";
+  const g = r.guardrails, pct = Math.round(g.groundedness * 100);
+  $("#guard").innerHTML = `<dl class="kv">
+    <dt>Groundedness</dt><dd><div class="row"><div class="meter" style="width:140px"><i style="width:${pct}%;background:${pct < 100 ? "var(--warn)" : "var(--good)"}"></i></div><b>${pct}%</b></div></dd>
+    <dt>Sentences</dt><dd>${g.sentences_total} checked · ${g.sentences_removed} removed</dd>
+    <dt>Citations</dt><dd>${r.citations.length} sources, ${ocr.size} from OCR'd outside records</dd>
+    <dt>PHI scrub</dt><dd>${g.phi_redactions} redactions</dd>
+    <dt>Flags</dt><dd>${g.flags.length ? g.flags.map(esc).join("<br>") : "none"}</dd></dl>
+    ${g.quarantined.map(q => `<div class="quar">⚠ Quarantined before the model saw it: <b>${esc(q.reason)}</b><br><span class="mono">${esc(q.label)}</span></div>`).join("")}`;
+  $("#evidence").innerHTML = r.citations.length ? r.citations.map(c => `<div class="ev" data-n="${c.n}">
+      <div><span class="n">[${c.n}]</span>${esc(c.text)}<span class="trust ${c.trust}">${esc(c.trust)}</span></div>
+      <div class="lab mono">${esc(c.label)} → ${esc(c.resource)}</div><div class="src"></div></div>`).join("")
+    : '<span class="muted">No evidence cited.</span>';
+  document.querySelectorAll(".cite, .ev").forEach(el => el.onclick = () => focusCitation(+el.dataset.n));
+}
+$("#ask-form").onsubmit = ask;
+
+async function focusCitation(n) {
+  document.querySelectorAll(".ev").forEach(el => el.classList.toggle("on", +el.dataset.n === n));
+  const el = document.querySelector(`.ev[data-n="${n}"]`); if (!el) return;
+  el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  const c = lastAnswer.citations.find(x => x.n === n);
+  const [urn, seg] = c.source.split("#");
+  const ctrl = urn.split(":").pop();
+  await refresh();
+  const msg = ledger.find(m => m.control_id === ctrl);
+  const resource = await api("/fhir/" + c.resource.split("#")[0]);
+  el.querySelector(".src").innerHTML = `
+    <div class="lineage"><span class="node">${esc(msg?.sender || "sender")}</span>→<span class="node mono">${esc(ctrl)} ${esc(seg)}</span>→<span class="node mono">${esc(c.resource.split("#")[0])}</span>→<span class="node">citation [${n}]</span></div>
+    ${msg ? renderHL7(msg.raw_redacted, seg) : ""}
+    <details style="margin-top:6px"><summary class="muted">FHIR resource</summary><pre class="json">${esc(JSON.stringify(resource, null, 2))}</pre></details>`;
+}
+
+// ---- FHIR browser
+async function loadTypes() {
+  const s = await api("/api/stats");
+  $("#types").innerHTML = Object.entries(s.resources).map(([t, n]) => `<button class="btn" style="display:flex;justify-content:space-between;width:100%;margin-bottom:6px" data-t="${t}"><span>${t}</span><b>${n}</b></button>`).join("") || '<span class="muted">Empty store</span>';
+  document.querySelectorAll("#types button").forEach(b => b.onclick = async () => {
+    const bundle = await api(`/fhir/${b.dataset.t}?_count=50`);
+    $("#fhir-title").textContent = `${b.dataset.t} · ${bundle.total}`;
+    $("#fhir-list").innerHTML = bundle.entry.map(e => `<details style="margin-bottom:6px"><summary class="mono">${esc(e.resource.resourceType)}/${esc(e.resource.id)} <span class="muted">v${esc(e.resource.meta?.versionId)} · ${esc(e.resource.meta?.source || "")}</span></summary><pre class="json">${esc(JSON.stringify(e.resource, null, 2))}</pre></details>`).join("");
+  });
+}
+
+loadSamples(); refresh();
+</script>
+</body>
+</html>

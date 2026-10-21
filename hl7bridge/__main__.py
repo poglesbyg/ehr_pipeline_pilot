@@ -1,0 +1,123 @@
+"""hl7bridge command line.
+
+    python -m hl7bridge serve [--seed]        HTTP :8080 + MLLP :2575 (+ load sample feeds)
+    python -m hl7bridge convert FILE.hl7      print the FHIR transaction Bundle (dry run)
+    python -m hl7bridge send FILE.hl7 ...     send over MLLP, print ACKs
+    python -m hl7bridge ask "question"        ask the assistant about the sample Veteran
+    python -m hl7bridge eval                  run the evaluation harness
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+from .ai.evaluate import run_eval, to_markdown
+from .ai.providers import provider_from_env
+from .config import BridgeConfig
+from .mllp import MLLPServer, send
+from .pipeline import Pipeline
+from .server import SAMPLES, App, serve_http
+from .store import FhirStore
+
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_ICN = "urn:oid:2.16.840.1.113883.4.349|1013579246V135792"
+
+
+def _seed(app: App) -> None:
+    for f in sorted(SAMPLES.glob("*.hl7")):
+        r = app.pipeline.process(f.read_text())
+        print(f"  {f.name:40} {r.status:9} {r.ack.split(chr(13))[1]}")
+
+
+def _loaded_app() -> App:
+    app = App(FhirStore(), BridgeConfig.from_env(), provider_from_env())
+    for f in sorted(SAMPLES.glob("*.hl7")):
+        app.pipeline.process(f.read_text())
+    return app
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hl7bridge", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("serve")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--http-port", type=int, default=8080)
+    p.add_argument("--mllp-port", type=int, default=2575)
+    p.add_argument("--db", default=":memory:")
+    p.add_argument("--seed", action="store_true", help="load the synthetic sample feeds on start")
+    p = sub.add_parser("convert")
+    p.add_argument("file")
+    p = sub.add_parser("send")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=2575)
+    p = sub.add_parser("ask")
+    p.add_argument("question", nargs="?", default="")
+    p = sub.add_parser("eval")
+    p.add_argument("--gold", default=str(ROOT / "eval" / "gold.json"))
+    p.add_argument("--out", default=str(ROOT / "eval" / "report.md"))
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO if args.cmd == "serve" else logging.WARNING,
+                        format="%(asctime)s %(name)s %(message)s")
+
+    if args.cmd == "serve":
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), provider_from_env())
+        mllp = MLLPServer(lambda text: app.pipeline.process(text).ack, args.host, args.mllp_port).start_in_thread()
+        httpd = serve_http(app, args.host, args.http_port)
+        if args.seed:
+            print("Loading synthetic VistA feeds:")
+            _seed(app)
+        print(f"\n  Dashboard   http://{args.host}:{args.http_port}/\n"
+              f"  FHIR R4     http://{args.host}:{args.http_port}/fhir/metadata\n"
+              f"  MLLP        {args.host}:{mllp.port}\n"
+              f"  Model       {app.assistant.provider.name}\n")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            mllp.stop()
+        return 0
+
+    if args.cmd == "convert":
+        result = Pipeline(FhirStore(), BridgeConfig.from_env()).convert(Path(args.file).read_text())
+        print(json.dumps(result.bundle or result.outcome, indent=2))
+        print(f"\n{result.status}: {result.ack.split(chr(13))[1]}", file=sys.stderr)
+        for w in result.warnings:
+            print(f"warning: {w}", file=sys.stderr)
+        return 0 if result.status == "accepted" else 1
+
+    if args.cmd == "send":
+        for f in args.files:
+            ack = send(Path(f).read_text(), args.host, args.port)
+            print(f"{Path(f).name}: {ack.split(chr(13))[1]}")
+        return 0
+
+    if args.cmd == "ask":
+        app = _loaded_app()
+        pid = app.store.search("Patient", {"identifier": SAMPLE_ICN})[0]["id"]
+        r = app.assistant.ask(pid, args.question, user="cli")
+        print(f"\n{r['answer']}\n\n{r['disclaimer']}\n")
+        for c in r["citations"]:
+            print(f"  [{c['n']}] {c['label']}  ({c['resource']})")
+        g = r["guardrails"]
+        print(f"\n  groundedness {g['groundedness']} · quarantined {len(g['quarantined'])} · "
+              f"provider {r['provider']} · {r['timing_ms']['total']} ms")
+        return 0
+
+    if args.cmd == "eval":
+        report = run_eval(_loaded_app().assistant, args.gold)
+        md = to_markdown(report)
+        Path(args.out).write_text(md)
+        print(md)
+        return 0 if report["summary"]["passed"] == report["summary"]["cases"] else 1
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

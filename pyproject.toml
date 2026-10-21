@@ -1,0 +1,15 @@
+[project]
+name = "hl7bridge"
+version = "0.1.0"
+description = "VistA HL7 v2 -> FHIR R4 interoperability pilot with grounded, cited clinical summarization"
+requires-python = ">=3.10"
+dependencies = []  # standard library only - runs inside any boundary without a package mirror
+
+[project.scripts]
+hl7bridge = "hl7bridge.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["hl7bridge*"]
+
+[tool.setuptools.package-data]
+hl7bridge = ["static/*.html"]
