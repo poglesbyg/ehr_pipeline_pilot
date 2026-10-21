@@ -62,6 +62,13 @@ dependencies, so it can run inside any boundary.
 | Lock-in risk | Moderate (provider abstraction in this repo mitigates it) | Moderate | High: prompts, eval and data flow sit inside the vendor |
 | Time to first value | Medium | Medium | Fast, *if* the vendor is already authorized |
 
+A fourth option belongs in the comparison too: **open-weight models on VA-managed compute**
+(Ollama, vLLM or a similar server inside the boundary). There's no third-party data
+processing and no per-token cost, and it works air-gapped. The tradeoffs are GPU capacity
+and patching, which VA would own. In this pilot's eval, a 26B open model matched the gold set
+at about 1 s per answer on a single laptop (README, "Results"). That's enough to make it a
+credible fallback tier or an on-prem option, though not proof of clinical quality.
+
 **Recommendation pattern:** build the *integration and trust layer* in-house on whichever
 VAEC cloud already hosts the data, because that's where VA's differentiation and risk live.
 Buy the *commodity services* (LLM, search, OCR) from the CSP inside the same boundary. Only

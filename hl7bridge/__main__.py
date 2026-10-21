@@ -12,11 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
 from .ai.evaluate import run_eval, to_markdown
-from .ai.providers import provider_from_env
+from .ai.providers import make_provider
 from .ccda import ingest as ingest_ccda
 from .config import BridgeConfig
 from .mllp import MLLPServer, send
@@ -39,8 +40,18 @@ def _seed(app: App, quiet: bool = False) -> None:
             print(f"  hie/{f.name:36} {r['status']:9} C-CDA {r.get('control_id')}")
 
 
-def _loaded_app() -> App:
-    app = App(FhirStore(), BridgeConfig.from_env(), provider_from_env())
+def _provider(args):
+    return make_provider(args.provider, args.model)
+
+
+def _add_provider_args(p) -> None:
+    p.add_argument("--provider", default="auto", choices=["auto", "extractive", "azure-openai", "ollama"],
+                   help="auto: Azure if configured, else Ollama if OLLAMA_MODEL is set, else extractive")
+    p.add_argument("--model", help="Ollama model (e.g. llama3.1:8b) or Azure deployment name")
+
+
+def _loaded_app(args) -> App:
+    app = App(FhirStore(), BridgeConfig.from_env(), _provider(args))
     _seed(app, quiet=True)
     return app
 
@@ -55,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mllp-port", type=int, default=2575)
     p.add_argument("--db", default=":memory:")
     p.add_argument("--seed", action="store_true", help="load the synthetic sample feeds on start")
+    _add_provider_args(p)
     p = sub.add_parser("convert")
     p.add_argument("file")
     p = sub.add_parser("send")
@@ -62,16 +74,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=2575)
     p = sub.add_parser("ask")
+    _add_provider_args(p)
     p.add_argument("question", nargs="?", default="")
     p = sub.add_parser("eval")
     p.add_argument("--gold", default=str(ROOT / "eval" / "gold.json"))
-    p.add_argument("--out", default=str(ROOT / "eval" / "report.md"))
+    p.add_argument("--out", help="default: eval/report.md, or eval/report-<provider>.md for hosted/local models")
+    _add_provider_args(p)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.cmd == "serve" else logging.WARNING,
                         format="%(asctime)s %(name)s %(message)s")
 
     if args.cmd == "serve":
-        app = App(FhirStore(args.db), BridgeConfig.from_env(), provider_from_env())
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
         mllp = MLLPServer(lambda text: app.pipeline.process(text).ack, args.host, args.mllp_port).start_in_thread()
         httpd = serve_http(app, args.host, args.http_port)
         if args.seed:
@@ -104,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "ask":
-        app = _loaded_app()
+        app = _loaded_app(args)
         pid = app.store.search("Patient", {"identifier": SAMPLE_ICN})[0]["id"]
         r = app.assistant.ask(pid, args.question, user="cli")
         print(f"\n{r['answer']}\n\n{r['disclaimer']}\n")
@@ -116,7 +130,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "eval":
-        report = run_eval(_loaded_app().assistant, args.gold)
+        app = _loaded_app(args)
+        report = run_eval(app.assistant, args.gold)
+        name = app.assistant.provider.name
+        if not args.out:
+            slug = re.sub(r"[^a-z0-9.]+", "-", name.lower()).strip("-")
+            args.out = str(ROOT / "eval" / ("report.md" if name == "extractive" else f"report-{slug}.md"))
         md = to_markdown(report)
         Path(args.out).write_text(md)
         print(md)

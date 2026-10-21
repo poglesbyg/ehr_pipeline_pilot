@@ -40,6 +40,13 @@ class GuardrailTests(unittest.TestCase):
         self.assertEqual(r.groundedness, 0.0)
         self.assertEqual(r.answer, "")
 
+    def test_citation_lists_and_evidence_dates(self):
+        dated = [Chunk("c", "Patient/1", "lab", "Hemoglobin A1c 8.9 %.", "Observation/1", date="2026-10-20")]
+        r = check_output("A1c was 8.9 % on 2026-10-20 [1]. Same value [1, 1].", dated)
+        self.assertEqual(r.groundedness, 1.0)
+        r = check_output("A1c was 8.9 % on 2026-10-23 [1].", dated)
+        self.assertEqual(r.groundedness, 0.0)  # a date the evidence doesn't carry is still caught
+
     def test_non_strict_marks_instead_of_removing(self):
         r = check_output("The patient is stable.", self.EVIDENCE, strict=False)
         self.assertIn("[unverified]", r.answer)
@@ -85,6 +92,12 @@ class AssistantTests(unittest.TestCase):
         r = self.assistant.ask(other["id"], "potassium creatinine allergy")
         self.assertEqual(r["citations"], [])
         self.assertTrue(r["answer"].startswith("Not found"))
+
+    def test_outside_only_sentences_are_attributed_in_code(self):
+        echo = self.assistant.ask(self.pid, "What did the outside cardiologist find on echo?")["answer"]
+        self.assertIn("(outside record, OCR) [", echo)
+        k = self.assistant.ask(self.pid, "potassium")["answer"]
+        self.assertNotIn("outside record", k)  # VA-sourced sentences stay untagged
 
     def test_merged_identity_is_searched(self):
         self.assertEqual(len(self.assistant.identity(self.pid)), 2)

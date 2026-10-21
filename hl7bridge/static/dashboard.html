@@ -349,7 +349,8 @@ async function ask(e) {
   if (r.resourceType === "OperationOutcome") { $("#answer").textContent = r.issue[0].diagnostics; return; }
   lastAnswer = r;
   const ocr = new Set(r.citations.filter(c => c.trust === "ocr").map(c => c.n));
-  const html = esc(r.answer).replace(/\[(\d+)\]/g, (_, n) => `<span class="cite${ocr.has(+n) ? " ocr" : ""}" data-n="${n}">${n}</span>`);
+  const html = esc(r.answer).replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, group) => group.split(",").map(s => s.trim())
+    .map(n => `<span class="cite${ocr.has(+n) ? " ocr" : ""}" data-n="${n}">${n}</span>`).join(""));
   $("#answer").className = "";
   $("#answer").innerHTML = `<div class="answer">${html}</div><div class="disclaimer">${esc(r.disclaimer)}</div>
     <div class="muted" style="font-size:12px;margin-top:8px">${esc(r.provider)} · retrieval ${r.timing_ms.retrieval} ms · generation ${r.timing_ms.generation} ms · ${r.evidence_considered} evidence chunks considered · audit event recorded</div>`;
