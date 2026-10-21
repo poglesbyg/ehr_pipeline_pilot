@@ -73,6 +73,7 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
 .ev .lab { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .trust { font-size: 10.5px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--line); margin-left: 6px; }
 .trust.ocr { color: var(--warn); border-color: var(--warn); }
+.trust.hie { color: var(--accent); border-color: var(--accent); }
 .meter { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
 .meter > i { display: block; height: 100%; background: var(--good); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
@@ -105,7 +106,7 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
   <section id="tab-engine" class="grid g-engine">
     <div class="grid" style="align-content:start">
       <div class="card samples">
-        <h2>Synthetic VistA feeds</h2>
+        <h2>Synthetic VistA &amp; HIE feeds</h2>
         <div id="samples"></div>
         <div class="row" style="margin-top:8px"><button class="btn primary" id="send-all">Send all in order</button></div>
       </div>
@@ -211,6 +212,28 @@ function renderHL7(text, highlight) {
   }).join("")}</pre>`;
 }
 
+function renderXML(text, where) {
+  // Highlight the n-th <entry> (or organizer observation) of the cited section when we can find it.
+  let html = esc(text);
+  const m = where && where.match(/^(\w+)\/(?:entry|observation)\[(\d+)\]$/);
+  if (m) {
+    const titles = { allergies: "Allergies", problems: "Problems", medications: "Medications", results: "Results" };
+    const start = html.indexOf(`&lt;title&gt;${titles[m[1]]}&lt;/title&gt;`);
+    const tag = where.includes("observation") ? "&lt;component&gt;&lt;observation" : "&lt;entry&gt;";
+    let at = start;
+    for (let i = 0; at !== -1 && i < +m[2]; i++) at = html.indexOf(tag, at + 1);
+    const close = where.includes("observation") ? "&lt;/observation&gt;&lt;/component&gt;" : "&lt;/entry&gt;";
+    const end = at === -1 ? -1 : html.indexOf(close, at);
+    if (start !== -1 && at !== -1 && end !== -1) {
+      html = html.slice(0, at) + '<mark style="background:#3b3410;color:inherit;outline:1px solid #ffd866">' +
+        html.slice(at, end + close.length) + "</mark>" + html.slice(end + close.length);
+    }
+  }
+  return `<pre class="json" style="max-height:360px">${html}</pre>`;
+}
+const isXML = t => /^\s*(<\?xml|<ClinicalDocument)/.test(t || "");
+const renderSource = (text, where) => isXML(text) ? renderXML(text, where) : renderHL7(text, where);
+
 const tip = $("#tip");
 document.addEventListener("mouseover", e => { const t = e.target.closest("[data-tip]"); if (!t) return tip.style.display = "none"; tip.textContent = t.dataset.tip; tip.style.display = "block"; });
 document.addEventListener("mousemove", e => { tip.style.left = (e.clientX + 12) + "px"; tip.style.top = (e.clientY + 14) + "px"; });
@@ -246,8 +269,8 @@ function showLedger(m) {
   $("#result").className = "";
   $("#result").innerHTML = `<div class="row" style="margin-bottom:8px"><span class="st ${m.status}">${m.status}</span>
     <span class="mono">${esc(m.message_type)} · ${esc(m.control_id)}</span><span class="muted">stored copy (redacted)</span></div>
-    ${renderHL7(m.raw_redacted || "")}
-    <h2 style="margin-top:12px">ACK</h2>${renderHL7(m.ack)}
+    ${renderSource(m.raw_redacted || "")}
+    <h2 style="margin-top:12px">${isXML(m.raw_redacted) ? "Result" : "ACK"}</h2>${isXML(m.raw_redacted) ? `<p class="mono">${esc(m.ack)}</p>` : renderHL7(m.ack)}
     ${m.error ? `<p style="color:var(--bad)">${esc(m.error)}</p>` : ""}
     <h2 style="margin-top:12px">Resources committed</h2>${refs.map(r => `<span class="res mono">${esc(r)}</span>`).join("") || '<span class="muted">none</span>'}`;
 }
@@ -270,13 +293,31 @@ function showResult(raw, r) {
 }
 
 async function ingest(raw, dry) {
+  if (isXML(raw)) {
+    const r = await api("/hie/ccda", { method: "POST", body: raw });
+    showCcda(raw, r); await refresh(); return r;
+  }
   const r = await api(dry ? "/hl7/v2/$convert" : "/hl7/v2", { method: "POST", body: raw });
   showResult(raw, r); await refresh(); return r;
 }
 
+function showCcda(raw, r) {
+  const created = (r.response?.entry || []).map(e => `<span class="res mono">${esc(e.response.location.split("/_history")[0])}</span>`).join("");
+  const issues = (r.outcome?.issue || []).map(i => `<div style="color:${i.severity === "error" ? "var(--bad)" : "var(--muted)"}">${esc(i.severity)}: ${esc(i.diagnostics)}</div>`).join("");
+  $("#result").className = "";
+  $("#result").innerHTML = `
+    <div class="row" style="margin-bottom:8px"><span class="st ${r.status}">${r.status}</span>
+      <span class="mono">C-CDA CCD · ${esc(r.control_id || "?")}</span><span class="muted">${r.elapsed_ms ?? ""} ms</span></div>
+    <div class="lineage"><span class="node">HIE gateway (C-CDA)</span>→<span class="node">reject DTDs, parse</span>→<span class="node">allergies · problems · meds · results</span>→<span class="node">US Core, marked unconfirmed</span>→<span class="node">atomic transaction</span>→<span class="node">evidence index</span></div>
+    ${renderXML(raw)}
+    <h2 style="margin-top:12px">Validation</h2>${issues || '<span class="muted">duplicate document id; nothing written</span>'}
+    ${r.warnings?.length ? `<div class="muted">${r.warnings.map(esc).join("<br>")}</div>` : ""}
+    <h2 style="margin-top:12px">Resources committed</h2>${created || '<span class="muted">none</span>'}`;
+}
+
 async function loadSamples() {
   const names = await api("/api/samples");
-  $("#samples").innerHTML = names.map(n => `<button class="btn" data-n="${esc(n)}"><span>${esc(n.replace(/^\d+_/, "").replace(".hl7", "").replace(/_/g, " "))}</span><span class="muted mono">${esc(n.slice(0, 2))}</span></button>`).join("");
+  $("#samples").innerHTML = names.map(n => `<button class="btn" data-n="${esc(n)}"><span>${esc(n.replace(/^hie\//, "").replace(/^\d+_/, "").replace(/\.(hl7|xml)$/, "").replace(/_/g, " "))}</span><span class="muted mono">${esc(n.startsWith("hie/") ? "HIE" : n.slice(0, 2))}</span></button>`).join("");
   document.querySelectorAll("#samples button").forEach(b => b.onclick = async () => {
     const raw = await api("/api/samples/" + b.dataset.n); $("#raw").value = raw; ingest(raw, false);
   });
@@ -286,7 +327,7 @@ $("#dry").onclick = () => ingest($("#raw").value, true);
 $("#send").onclick = () => ingest($("#raw").value, false);
 
 // ---- assistant
-const SUGGEST = ["", "How is kidney function?", "Was the potassium really elevated?", "What did the outside cardiologist find on echo?", "What allergies does the patient have?", "How well controlled is the diabetes?", "Does the patient have a pacemaker?"];
+const SUGGEST = ["", "How is kidney function?", "Was the potassium really elevated?", "What did the outside cardiologist find on echo?", "What allergies does the patient have?", "What medications is the patient on?", "How has the A1c changed?", "Does the patient have a pacemaker?"];
 $("#suggest").innerHTML = SUGGEST.map(q => `<button class="btn" data-q="${esc(q)}">${esc(q || "Summarize patient")}</button>`).join("");
 document.querySelectorAll("#suggest button").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; ask(); });
 
@@ -341,7 +382,7 @@ async function focusCitation(n) {
   const resource = await api("/fhir/" + c.resource.split("#")[0]);
   el.querySelector(".src").innerHTML = `
     <div class="lineage"><span class="node">${esc(msg?.sender || "sender")}</span>→<span class="node mono">${esc(ctrl)} ${esc(seg)}</span>→<span class="node mono">${esc(c.resource.split("#")[0])}</span>→<span class="node">citation [${n}]</span></div>
-    ${msg ? renderHL7(msg.raw_redacted, seg) : ""}
+    ${msg ? renderSource(msg.raw_redacted, seg) : ""}
     <details style="margin-top:6px"><summary class="muted">FHIR resource</summary><pre class="json">${esc(JSON.stringify(resource, null, 2))}</pre></details>`;
 }
 

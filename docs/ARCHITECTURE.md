@@ -89,10 +89,10 @@ endpoints, HIE gateways, and the fax/OCR intake.
 | **IA-2 / IA-5** | *Not in pilot* (localhost only) | VA SSOi / Entra ID, PIV-backed; managed identity to the model endpoint, no keys |
 | **SC-8 / SC-13** Transmission | *Pilot:* MLLP in clear on localhost | MLLP over TLS 1.2+ or site-to-site VPN; private endpoints for all PaaS |
 | **SC-28** Data at rest | SSN dropped at the boundary by default; ledger stores a redacted copy | CSP encryption with VA-managed keys (CMK) |
-| **SI-10** Input validation | Strict HL7 parsing, table validation (0001/0004/0357), pre-commit US Core validation; a malformed message returns AE/AR and nothing partial is written | Add the official HL7 FHIR Validator in CI |
+| **SI-10** Input validation | C-CDA documents with DTD/ENTITY declarations rejected (no XXE / entity expansion). Strict HL7 parsing, table validation (0001/0004/0357), pre-commit US Core validation; a malformed message returns AE/AR and nothing partial is written | Add the official HL7 FHIR Validator in CI |
 | **SI-4 / SI-7** Monitoring & integrity | Duplicate detection on MSH-10; atomic transactions | Alerting on NAK rate and groundedness drift |
 | **PM-25 / PT-2** Minimum necessary PII | `ssn_policy=omit`; redacted ledger; logs carry no message content (`log_message` strips query strings) | Privacy Threshold Analysis / PIA |
-| **SA-11** Developer testing | 56 unit/integration tests, plus an evaluation harness with safety cases | Run the eval in CI as a release gate |
+| **SA-11** Developer testing | 67 unit/integration tests on Python 3.10–3.13 in CI; evaluation harness runs as a release gate | Add the official FHIR Validator and a live-model eval stage |
 
 ## 5. Trustworthy AI
 
@@ -130,7 +130,7 @@ Measure on VA's own de-identified gold set. Run `python -m hl7bridge eval` to ge
 |---|---|---|---|
 | VistA ADT, Lab, TIU | HL7 v2.x over MLLP | **Implemented**: ADT A01/A02/A03/A04/A08/A11/A40, ORU^R01, MDM^T02/T04 | Pharmacy (RDE/RDS), orders (ORM/OMG), problem list |
 | Oracle Health (Federal EHR) | FHIR R4 REST | Store accepts FHIR transactions (`POST /fhir`) | Bulk `$export` into the same store; reconcile identities on ICN |
-| HIE (eHealth Exchange / Carequality) | C-CDA via IHE XCA | Not yet | C-CDA → FHIR (HL7 C-CDA on FHIR maps), same chunking path |
+| HIE (eHealth Exchange / Carequality) | C-CDA via IHE XCA | **Implemented** for CCD allergies, problems, medications and results (`POST /hie/ccda`); outside assertions marked `unconfirmed` | Notes, procedures, immunizations, vitals sections; XCA query/retrieve client; reconciliation workflow |
 | Faxed community records | Image/PDF → OCR | Simulated (MDM with OCR text and confidence) | Document Intelligence/Textract; route low-confidence pages to human review |
 | CDW | SQL | Not in scope | Use for eval-set construction and population-level validation only |
 
@@ -142,5 +142,7 @@ These are stated deliberately, because an honest pilot is easier to authorize.
 - `ZEL` is a pilot-defined Z-segment that shows the extension pattern. It isn't VistA's actual layout.
 - The pre-commit validator covers the US Core rules this pilot relies on. The official FHIR Validator should run in CI.
 - BM25 with a small synonym table stands in for hybrid vector search. It's adequate for the demo, but it isn't production recall.
-- The gold set is 11 cases on one synthetic patient, so it proves the *harness*. It is not evidence of clinical performance.
+- The gold set is 14 cases on one synthetic patient, so it proves the *harness*. It is not evidence of clinical performance.
+- The Azure OpenAI provider is tested against a mock of the chat-completions contract, not yet against a live deployment.
+- C-CDA patient matching uses the ICN when the partner returns it; real-world correlation goes through the MPI.
 - No authentication. Localhost binding only.

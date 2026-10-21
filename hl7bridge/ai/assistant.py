@@ -18,7 +18,8 @@ SUMMARY_FACETS = [
     ("admission inpatient encounter reason", 2),
     ("abnormal high low critical lab results", 5),
     ("hospital course discharge plan follow-up", 3),
-    ("allergy reaction", 2),
+    ("allergy reaction", 3),
+    ("problem list medication", 4),
     ("outside community consult echo", 2),
 ]
 

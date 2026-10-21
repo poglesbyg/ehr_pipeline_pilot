@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .ai.evaluate import run_eval, to_markdown
 from .ai.providers import provider_from_env
+from .ccda import ingest as ingest_ccda
 from .config import BridgeConfig
 from .mllp import MLLPServer, send
 from .pipeline import Pipeline
@@ -27,16 +28,20 @@ ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_ICN = "urn:oid:2.16.840.1.113883.4.349|1013579246V135792"
 
 
-def _seed(app: App) -> None:
+def _seed(app: App, quiet: bool = False) -> None:
     for f in sorted(SAMPLES.glob("*.hl7")):
         r = app.pipeline.process(f.read_text())
-        print(f"  {f.name:40} {r.status:9} {r.ack.split(chr(13))[1]}")
+        if not quiet:
+            print(f"  {f.name:40} {r.status:9} {r.ack.split(chr(13))[1]}")
+    for f in sorted((SAMPLES / "hie").glob("*.xml")):
+        r = ingest_ccda(app.store, f.read_text(), app.config, on_commit=app.assistant.reindex)
+        if not quiet:
+            print(f"  hie/{f.name:36} {r['status']:9} C-CDA {r.get('control_id')}")
 
 
 def _loaded_app() -> App:
     app = App(FhirStore(), BridgeConfig.from_env(), provider_from_env())
-    for f in sorted(SAMPLES.glob("*.hl7")):
-        app.pipeline.process(f.read_text())
+    _seed(app, quiet=True)
     return app
 
 

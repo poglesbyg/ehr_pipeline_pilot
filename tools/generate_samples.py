@@ -119,7 +119,7 @@ files["06_mdm_t02_discharge_summary.hl7"] = [
     ], 1)],
 ]
 files["07_mdm_t02_community_fax.hl7"] = [
-    msh("FAXOCR", "COMMUNITY-CARE^CC-UPMC.EXAMPLE^DNS", "20261019160000-0500", "MDM^T02^MDM_T02", "CC-FAX-5531"),
+    msh("FAXOCR", "COMMUNITY-CARE^THREE-RIVERS.EXAMPLE^DNS", "20261019160000-0500", "MDM^T02^MDM_T02", "CC-FAX-5531"),
     seg("EVN", {1: "T02", 2: "20261019160000-0500"}),
     seg("PID", {1: "1", 3: ICN, 5: NAME, 7: "19580314", 8: "M"}),
     seg("PV1", {1: "1", 2: "O"}),

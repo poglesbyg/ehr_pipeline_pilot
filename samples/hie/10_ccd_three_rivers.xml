@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic C-CDA R2.1 Continuity of Care Document. Fictional organization, patient and data. -->
+<ClinicalDocument xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <realmCode code="US"/>
+  <typeId root="2.16.840.1.113883.1.3" extension="POCD_HD000040"/>
+  <templateId root="2.16.840.1.113883.10.20.22.1.1" extension="2015-08-01"/>
+  <templateId root="2.16.840.1.113883.10.20.22.1.2" extension="2015-08-01"/>
+  <id root="2.16.840.1.113883.3.9999.1" extension="TRCH-CCD-20260902-7781"/>
+  <code code="34133-9" codeSystem="2.16.840.1.113883.6.1" displayName="Summary of episode note"/>
+  <title>Three Rivers Community Hospital - Continuity of Care Document</title>
+  <effectiveTime value="20260902161500-0400"/>
+  <confidentialityCode code="N" codeSystem="2.16.840.1.113883.5.25"/>
+  <recordTarget>
+    <patientRole>
+      <id root="2.16.840.1.113883.3.9999.1.2" extension="TR-448812"/>
+      <id root="2.16.840.1.113883.4.349" extension="1013579246V135792"/>
+      <id root="2.16.840.1.113883.4.1" extension="000123456"/>
+      <addr use="HP"><streetAddressLine>1200 LIBERTY AVE</streetAddressLine><city>PITTSBURGH</city><state>PA</state><postalCode>15222</postalCode></addr>
+      <telecom use="HP" value="tel:+1-412-555-0142"/>
+      <patient>
+        <name><given>JAMES</given><given>ALAN</given><family>VETERAN</family></name>
+        <administrativeGenderCode code="M" codeSystem="2.16.840.1.113883.5.1"/>
+        <birthTime value="19580314"/>
+      </patient>
+    </patientRole>
+  </recordTarget>
+  <custodian><assignedCustodian><representedCustodianOrganization>
+    <id root="2.16.840.1.113883.3.9999.1"/>
+    <name>Three Rivers Community Hospital</name>
+  </representedCustodianOrganization></assignedCustodian></custodian>
+  <component><structuredBody>
+
+    <component><section>
+      <templateId root="2.16.840.1.113883.10.20.22.2.6.1" extension="2015-08-01"/>
+      <code code="48765-2" codeSystem="2.16.840.1.113883.6.1" displayName="Allergies and adverse reactions"/>
+      <title>Allergies</title>
+      <entry><act classCode="ACT" moodCode="EVN"><entryRelationship typeCode="SUBJ"><observation classCode="OBS" moodCode="EVN">
+        <effectiveTime><low value="20190411"/></effectiveTime>
+        <participant typeCode="CSM"><participantRole classCode="MANU"><playingEntity classCode="MMAT">
+          <code code="10180" codeSystem="2.16.840.1.113883.6.88" displayName="Sulfamethoxazole"/>
+        </playingEntity></participantRole></participant>
+        <entryRelationship typeCode="MFST" inversionInd="true"><observation classCode="OBS" moodCode="EVN">
+          <code code="ASSERTION" codeSystem="2.16.840.1.113883.5.4"/>
+          <value xsi:type="CD" code="271807003" codeSystem="2.16.840.1.113883.6.96" displayName="Skin rash"/>
+        </observation></entryRelationship>
+        <entryRelationship typeCode="SUBJ" inversionInd="true"><observation classCode="OBS" moodCode="EVN">
+          <code code="SEV" codeSystem="2.16.840.1.113883.5.4"/>
+          <value xsi:type="CD" code="6736007" codeSystem="2.16.840.1.113883.6.96" displayName="Moderate"/>
+        </observation></entryRelationship>
+      </observation></entryRelationship></act></entry>
+    </section></component>
+
+    <component><section>
+      <templateId root="2.16.840.1.113883.10.20.22.2.5.1" extension="2015-08-01"/>
+      <code code="11450-4" codeSystem="2.16.840.1.113883.6.1" displayName="Problem list"/>
+      <title>Problems</title>
+      <entry><act classCode="ACT" moodCode="EVN"><entryRelationship typeCode="SUBJ"><observation classCode="OBS" moodCode="EVN">
+        <effectiveTime><low value="20240115"/></effectiveTime>
+        <value xsi:type="CD" code="I50.22" codeSystem="2.16.840.1.113883.6.90" displayName="Chronic systolic (congestive) heart failure"/>
+      </observation></entryRelationship></act></entry>
+      <entry><act classCode="ACT" moodCode="EVN"><entryRelationship typeCode="SUBJ"><observation classCode="OBS" moodCode="EVN">
+        <effectiveTime><low value="20180602"/></effectiveTime>
+        <value xsi:type="CD" code="E11.9" codeSystem="2.16.840.1.113883.6.90" displayName="Type 2 diabetes mellitus without complications"/>
+      </observation></entryRelationship></act></entry>
+      <entry><act classCode="ACT" moodCode="EVN"><entryRelationship typeCode="SUBJ"><observation classCode="OBS" moodCode="EVN">
+        <effectiveTime><low value="20250820"/></effectiveTime>
+        <value xsi:type="CD" code="N18.31" codeSystem="2.16.840.1.113883.6.90" displayName="Chronic kidney disease, stage 3a"/>
+      </observation></entryRelationship></act></entry>
+    </section></component>
+
+    <component><section>
+      <templateId root="2.16.840.1.113883.10.20.22.2.1.1" extension="2014-06-09"/>
+      <code code="10160-0" codeSystem="2.16.840.1.113883.6.1" displayName="History of medication use"/>
+      <title>Medications</title>
+      <entry><substanceAdministration classCode="SBADM" moodCode="EVN">
+        <text>Carvedilol 6.25 mg by mouth twice daily</text>
+        <statusCode code="active"/>
+        <effectiveTime xsi:type="IVL_TS"><low value="20240115"/></effectiveTime>
+        <consumable><manufacturedProduct><manufacturedMaterial>
+          <code code="200031" codeSystem="2.16.840.1.113883.6.88" displayName="carvedilol 6.25 MG Oral Tablet"/>
+        </manufacturedMaterial></manufacturedProduct></consumable>
+      </substanceAdministration></entry>
+      <entry><substanceAdministration classCode="SBADM" moodCode="EVN">
+        <text>Furosemide 40 mg by mouth daily</text>
+        <statusCode code="active"/>
+        <effectiveTime xsi:type="IVL_TS"><low value="20240115"/></effectiveTime>
+        <consumable><manufacturedProduct><manufacturedMaterial>
+          <code code="313988" codeSystem="2.16.840.1.113883.6.88" displayName="furosemide 40 MG Oral Tablet"/>
+        </manufacturedMaterial></manufacturedProduct></consumable>
+      </substanceAdministration></entry>
+      <entry><substanceAdministration classCode="SBADM" moodCode="EVN">
+        <text>Metformin 500 mg by mouth twice daily with meals</text>
+        <statusCode code="active"/>
+        <effectiveTime xsi:type="IVL_TS"><low value="20180602"/></effectiveTime>
+        <consumable><manufacturedProduct><manufacturedMaterial>
+          <code code="861007" codeSystem="2.16.840.1.113883.6.88" displayName="metformin hydrochloride 500 MG Oral Tablet"/>
+        </manufacturedMaterial></manufacturedProduct></consumable>
+      </substanceAdministration></entry>
+    </section></component>
+
+    <component><section>
+      <templateId root="2.16.840.1.113883.10.20.22.2.3.1" extension="2015-08-01"/>
+      <code code="30954-2" codeSystem="2.16.840.1.113883.6.1" displayName="Relevant diagnostic tests and/or laboratory data"/>
+      <title>Results</title>
+      <entry><organizer classCode="BATTERY" moodCode="EVN">
+        <code code="24321-2" codeSystem="2.16.840.1.113883.6.1" displayName="Basic metabolic panel"/>
+        <component><observation classCode="OBS" moodCode="EVN">
+          <code code="2160-0" codeSystem="2.16.840.1.113883.6.1" displayName="Creatinine"/>
+          <effectiveTime value="20260615"/>
+          <value xsi:type="PQ" value="1.3" unit="mg/dL"/>
+          <interpretationCode code="N" codeSystem="2.16.840.1.113883.5.83"/>
+          <referenceRange><observationRange><text>0.7-1.3</text></observationRange></referenceRange>
+        </observation></component>
+      </organizer></entry>
+      <entry><organizer classCode="BATTERY" moodCode="EVN">
+        <code code="4548-4" codeSystem="2.16.840.1.113883.6.1" displayName="Hemoglobin A1c"/>
+        <component><observation classCode="OBS" moodCode="EVN">
+          <code code="4548-4" codeSystem="2.16.840.1.113883.6.1" displayName="Hemoglobin A1c"/>
+          <effectiveTime value="20260615"/>
+          <value xsi:type="PQ" value="8.1" unit="%"/>
+          <interpretationCode code="H" codeSystem="2.16.840.1.113883.5.83"/>
+          <referenceRange><observationRange><text>4.0-5.6</text></observationRange></referenceRange>
+        </observation></component>
+      </organizer></entry>
+    </section></component>
+
+  </structuredBody></component>
+</ClinicalDocument>

@@ -21,6 +21,8 @@ REQUIRED = {
     "DocumentReference": ["status", "type", "category", "subject", "content"],
     "AllergyIntolerance": ["clinicalStatus", "verificationStatus", "code", "patient"],
     "Provenance": ["target", "recorded", "agent"],
+    "Condition": ["clinicalStatus", "category", "code", "subject"],
+    "MedicationStatement": ["status", "medicationCodeableConcept", "subject"],
 }
 
 VALUE_SETS = {

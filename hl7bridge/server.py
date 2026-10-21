@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 from .ai.assistant import ClinicalAssistant
 from .ai.providers import Provider
+from .ccda import ingest as ingest_ccda
 from .config import BridgeConfig
 from .pipeline import Pipeline
 from .store import FhirStore, StoreError
@@ -24,7 +25,8 @@ STATIC = Path(__file__).parent / "static"
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 FHIR_JSON = "application/fhir+json"
 RESOURCE_TYPES = ["Patient", "Practitioner", "Encounter", "Observation", "DiagnosticReport",
-                  "DocumentReference", "AllergyIntolerance", "Provenance", "AuditEvent"]
+                  "DocumentReference", "AllergyIntolerance", "Condition", "MedicationStatement",
+                  "Provenance", "AuditEvent"]
 SEARCH_PARAMS = ["_id", "identifier", "patient", "subject", "code", "category", "family", "given",
                  "gender", "type", "_source", "_count"]
 
@@ -142,8 +144,9 @@ def make_handler(app: App):
                 if path == "/api/patients":
                     return self._send(200, app.patients())
                 if path == "/api/samples":
-                    return self._send(200, sorted(p.name for p in SAMPLES.glob("*.hl7")))
-                if m := re.fullmatch(r"/api/samples/([\w.-]+\.hl7)", path):
+                    return self._send(200, sorted(p.name for p in SAMPLES.glob("*.hl7"))
+                                      + sorted(f"hie/{p.name}" for p in (SAMPLES / "hie").glob("*.xml")))
+                if m := re.fullmatch(r"/api/samples/((?:hie/)?[\w.-]+\.(?:hl7|xml))", path):
                     f = SAMPLES / m[1]
                     return self._send(200, f.read_text(), "text/plain") if f.is_file() else self._outcome(404, "no sample")
                 if m := re.fullmatch(r"/api/evidence/Patient/([\w-]+)", path):
@@ -161,6 +164,9 @@ def make_handler(app: App):
                 if path in ("/hl7/v2", "/hl7/v2/$convert"):
                     result = app.pipeline.process(body, persist=not path.endswith("$convert"))
                     return self._send(200, result.to_json())
+                if path == "/hie/ccda":
+                    return self._send(200, ingest_ccda(app.store, body, app.config,
+                                                       on_commit=app.assistant.reindex))
                 if path == "/fhir":
                     bundle = json.loads(body)
                     response = app.store.transaction(bundle)
