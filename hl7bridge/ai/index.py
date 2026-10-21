@@ -30,7 +30,10 @@ SYNONYMS = {
     "allergies": ["allergy"],
     "allergic": ["allergy"],
     "meds": ["medication", "furosemide", "torsemide", "lisinopril", "metformin", "carvedilol"],
-    "medications": ["furosemide", "torsemide", "lisinopril", "metformin", "carvedilol"],
+    "medications": ["medication", "furosemide", "torsemide", "lisinopril", "metformin", "carvedilol"],
+    "problems": ["problem"],
+    "diagnoses": ["problem"],
+    "conditions": ["problem"],
     "electrolytes": ["sodium", "potassium", "chloride", "carbon"],
     "k": ["potassium"],
     "echo": ["lvef", "echo", "regurgitation"],
@@ -54,7 +57,7 @@ class Chunk:
     date: str = ""
     source: str = ""  # urn:hl7v2:<facility>:<control id>#<segment>
     label: str = ""
-    trust: str = "structured"  # structured | narrative | ocr
+    trust: str = "structured"  # structured | narrative | hie | ocr
     flags: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
@@ -87,6 +90,10 @@ def _value(obs: dict) -> str:
 
 def _label(source: str) -> str:
     # urn:hl7v2:999:999-LAB-0042#OBX[3] -> "999 · 999-LAB-0042 · OBX[3]"
+    # urn:ccda:<oid>:<doc id>#problems/entry[2] -> "C-CDA · <doc id> · problems/entry[2]"
+    if source.startswith("urn:ccda:"):
+        head, _, where = source.partition("#")
+        return " · ".join(x for x in ("C-CDA", head.rsplit(":", 1)[-1], where) if x)
     if not source.startswith("urn:hl7v2:"):
         return source
     head, _, seg = source[len("urn:hl7v2:"):].partition("#")
@@ -109,6 +116,8 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
         return []
     source = res.get("meta", {}).get("source", "")
     base = dict(patient=patient, resource=ref, source=source, label=_label(source))
+    if source.startswith("urn:ccda:"):
+        base["trust"] = "hie"
 
     if rtype == "Observation":
         flag = next((c.get("display") for i in res.get("interpretation", []) for c in i.get("coding", [])), "")
@@ -142,7 +151,24 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
         text += f" ({cat})" if cat else ""
         text += f": reaction {manifest.lower()}" if manifest and manifest != "unspecified" else ""
         text += f", severity {reaction['severity']}" if reaction.get("severity") else ""
+        if any(c.get("code") == "unconfirmed" for c in res.get("verificationStatus", {}).get("coding", [])):
+            text += " (unconfirmed outside record; not yet reconciled)"
         return [Chunk(ref, kind="allergy", text=text + ".", **base)]
+
+    if rtype == "Condition":
+        onset = res.get("onsetDateTime", "")[:10]
+        text = f"Problem list: {_concept_text(res['code'])}"
+        text += f" (onset {onset})" if onset else ""
+        return [Chunk(ref, kind="problem", text=text + ".", date=onset, **base)]
+
+    if rtype == "MedicationStatement":
+        start = res.get("effectivePeriod", {}).get("start", "")[:10]
+        dose = (res.get("dosage") or [{}])[0].get("text")
+        text = f"Medication ({res['status']}): {dose or _concept_text(res['medicationCodeableConcept'])}"
+        text += f", since {start}" if start else ""
+        source_org = res.get("informationSource", {}).get("display")
+        text += f"; reported by {source_org}" if source_org else ""
+        return [Chunk(ref, kind="medication", text=text + ".", date=start, **base)]
 
     if rtype == "Encounter":
         period = res.get("period", {})

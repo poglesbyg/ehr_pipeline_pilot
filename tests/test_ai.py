@@ -5,6 +5,7 @@ from hl7bridge.ai.assistant import ClinicalAssistant
 from hl7bridge.ai.evaluate import run_eval
 from hl7bridge.ai.guardrails import check_output, screen_evidence
 from hl7bridge.ai.index import Chunk
+from hl7bridge.ccda import ingest
 from hl7bridge.pipeline import Pipeline
 from hl7bridge.store import FhirStore
 
@@ -64,6 +65,8 @@ class AssistantTests(unittest.TestCase):
         pipeline = Pipeline(cls.store)
         for f in sorted((ROOT / "samples").glob("*.hl7")):
             pipeline.process(f.read_text())
+        for f in sorted((ROOT / "samples" / "hie").glob("*.xml")):
+            ingest(cls.store, f.read_text())
         cls.assistant = ClinicalAssistant(cls.store)
         cls.pid = cls.store.search("Patient", {"identifier": ICN})[0]["id"]
 
