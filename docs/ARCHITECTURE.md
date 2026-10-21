@@ -48,6 +48,7 @@ dependencies, so it can run inside any boundary.
 | `ai.index.EvidenceIndex` (BM25) | Azure AI Search (hybrid BM25 + vector + semantic ranker) or OpenSearch | Same chunk schema; the patient filter becomes a mandatory security filter |
 | `ai.providers.ExtractiveProvider` | Stays as the always-available fallback and the eval baseline | Hosted models must beat it on the gold set |
 | `ai.providers.AzureOpenAIProvider` | Azure OpenAI in Azure Government via private endpoint, Entra ID auth | Already implemented; config only |
+| `mcp.McpServer` (stdio) | Remote MCP over streamable HTTP behind the API gateway, OAuth 2.1 with SMART on FHIR scopes | Tools, scoping and audit stay the same; only transport and auth change |
 
 ## 3. Hosting options (vendor-neutral comparison)
 
@@ -84,7 +85,8 @@ endpoints, HIE gateways, and the fax/OCR intake.
 |---|---|---|
 | **AC-3** Access enforcement | Retrieval is filtered to one patient's identity before scoring (`EvidenceIndex.search`), so cross-patient evidence can't enter a prompt | Mandatory security filter in AI Search; SMART on FHIR patient/user scopes |
 | **AC-4** Information flow | Untrusted outside text is quarantined before it reaches the model (`guardrails.screen_evidence`) | Add a classifier-based prompt-shield service in front |
-| **AU-2 / AU-3 / AU-12** Audit | `AuditEvent` per question: who asked, which patient, which resources were disclosed, which model answered. `Provenance` per inbound message | Ship to the VA SOC SIEM; immutable storage |
+| **AC-6** Least privilege | The MCP server is read-only by default; ingest tools aren't even listed without `--allow-write`; conversion tools are dry runs | Per-agent OAuth scopes (e.g. `patient/*.read`); separate write identity |
+| **AU-2 / AU-3 / AU-12** Audit | `AuditEvent` per question, from the dashboard or an MCP agent: who asked (agent and the human it acts for), the query text, which patient, which resources were disclosed, which model answered. `Provenance` per inbound message | Ship to the VA SOC SIEM; immutable storage |
 | **AU-10** Non-repudiation | Every resource carries `meta.source` back to an MSH-10 control ID and segment | Sign the ledger entries |
 | **IA-2 / IA-5** | *Not in pilot* (localhost only) | VA SSOi / Entra ID, PIV-backed; managed identity to the model endpoint, no keys |
 | **SC-8 / SC-13** Transmission | *Pilot:* MLLP in clear on localhost | MLLP over TLS 1.2+ or site-to-site VPN; private endpoints for all PaaS |
@@ -92,7 +94,7 @@ endpoints, HIE gateways, and the fax/OCR intake.
 | **SI-10** Input validation | C-CDA documents with DTD/ENTITY declarations rejected (no XXE / entity expansion). Strict HL7 parsing, table validation (0001/0004/0357), pre-commit US Core validation; a malformed message returns AE/AR and nothing partial is written | Add the official HL7 FHIR Validator in CI |
 | **SI-4 / SI-7** Monitoring & integrity | Duplicate detection on MSH-10; atomic transactions | Alerting on NAK rate and groundedness drift |
 | **PM-25 / PT-2** Minimum necessary PII | `ssn_policy=omit`; redacted ledger; logs carry no message content (`log_message` strips query strings) | Privacy Threshold Analysis / PIA |
-| **SA-11** Developer testing | 67 unit/integration tests on Python 3.10–3.13 in CI; evaluation harness runs as a release gate | Add the official FHIR Validator and a live-model eval stage |
+| **SA-11** Developer testing | 78 unit/integration tests on Python 3.10–3.13 in CI; evaluation harness runs as a release gate | Add the official FHIR Validator and a live-model eval stage |
 
 ## 5. Trustworthy AI
 
