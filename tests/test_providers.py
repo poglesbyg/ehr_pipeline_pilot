@@ -6,13 +6,14 @@ eval against a real deployment.
 """
 
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from hl7bridge.ai.assistant import ClinicalAssistant
-from hl7bridge.ai.providers import SYSTEM_PROMPT, AzureOpenAIProvider
+from hl7bridge.ai.providers import SYSTEM_PROMPT, AzureOpenAIProvider, OllamaProvider, make_provider
 from hl7bridge.pipeline import Pipeline
 from hl7bridge.store import FhirStore
 
@@ -30,7 +31,11 @@ class MockAzure(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         MockAzure.requests.append({"path": self.path, "api_key": self.headers.get("api-key"), "body": body})
-        data = json.dumps({"choices": [{"message": {"role": "assistant", "content": MockAzure.reply}}]}).encode()
+        if self.path == "/api/chat":  # Ollama shape
+            data = json.dumps({"model": body["model"], "done": True,
+                               "message": {"role": "assistant", "content": MockAzure.reply}}).encode()
+        else:
+            data = json.dumps({"choices": [{"message": {"role": "assistant", "content": MockAzure.reply}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -85,6 +90,68 @@ class AzureProviderTests(unittest.TestCase):
         r = down.ask(self.pid, "potassium")
         self.assertTrue(r["provider"].startswith("extractive (fallback"))
         self.assertIn("5.6", r["answer"])
+
+
+class OllamaProviderTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), MockAzure)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.store = FhirStore()
+        Pipeline(cls.store).process((ROOT / "samples" / "02_oru_r01_bmp.hl7").read_text())
+        cls.pid = cls.store.search("Patient", {"identifier": ICN})[0]["id"]
+        cls.provider = OllamaProvider("llama3.1:8b", host=f"127.0.0.1:{cls.server.server_port}")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.store.close()
+
+    def setUp(self):
+        MockAzure.requests = []
+
+    def test_request_contract_and_reasoning_stripped(self):
+        MockAzure.reply = "<think>check evidence 1</think>Potassium was 5.6 mmol/L [1]."
+        r = ClinicalAssistant(self.store, self.provider).ask(self.pid, "potassium")
+        req = MockAzure.requests[0]
+        self.assertEqual(req["path"], "/api/chat")
+        self.assertEqual(req["body"]["model"], "llama3.1:8b")
+        self.assertFalse(req["body"]["stream"])
+        self.assertEqual(req["body"]["options"]["temperature"], 0)
+        self.assertEqual(req["body"]["messages"][0]["content"], SYSTEM_PROMPT)
+        self.assertEqual(r["answer"], "Potassium was 5.6 mmol/L [1].")
+        self.assertEqual(r["provider"], "ollama:llama3.1:8b")
+
+    def test_reasoning_model_output_normalized(self):
+        MockAzure.reply = "Potassium was **5.6\u202fmmol/L**【1】."
+        provider = OllamaProvider("gpt-oss:20b", host=f"127.0.0.1:{self.server.server_port}")
+        r = ClinicalAssistant(self.store, provider).ask(self.pid, "potassium")
+        self.assertEqual(MockAzure.requests[0]["body"]["think"], "low")
+        self.assertEqual(r["answer"], "Potassium was 5.6 mmol/L [1].".replace(" [1]", "[1]"))
+        self.assertEqual(r["guardrails"]["groundedness"], 1.0)
+
+    def test_empty_answer_falls_back(self):
+        MockAzure.reply = ""
+        r = ClinicalAssistant(self.store, self.provider).ask(self.pid, "potassium")
+        self.assertIn("fallback: RuntimeError", r["provider"])
+        self.assertIn("5.6", r["answer"])
+
+    def test_cloud_models_refused_by_default(self):
+        for model in ("gpt-oss:120b-cloud", "minimax-m2.5:cloud"):
+            with self.assertRaises(ValueError):
+                OllamaProvider(model)
+        self.assertEqual(OllamaProvider("gpt-oss:120b-cloud", allow_cloud=True).name, "ollama:gpt-oss:120b-cloud")
+
+    def test_auto_selection(self):
+        saved = {k: os.environ.pop(k, None) for k in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "OLLAMA_MODEL")}
+        try:
+            self.assertEqual(make_provider().name, "extractive")
+            os.environ["OLLAMA_MODEL"] = "qwen3:8b"
+            self.assertEqual(make_provider().name, "ollama:qwen3:8b")
+        finally:
+            os.environ.pop("OLLAMA_MODEL", None)
+            os.environ.update({k: v for k, v in saved.items() if v is not None})
 
 
 if __name__ == "__main__":

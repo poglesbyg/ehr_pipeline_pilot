@@ -62,8 +62,9 @@ curl -X POST --data-binary @samples/hie/10_ccd_three_rivers.xml http://127.0.0.1
 docker build -t hl7bridge . && docker run -p 127.0.0.1:8080:8080 hl7bridge
 ```
 
-To use a hosted model, set the variables below. The guardrails and the fallback stay in
-place. The request contract is tested against a mock endpoint (`tests/test_providers.py`),
+Models are selected with `--provider extractive|ollama|azure-openai` and `--model` on
+`ask`, `eval` and `serve`. To use Azure OpenAI, set the variables below. The guardrails
+and the fallback stay in place. The request contract is tested against a mock endpoint (`tests/test_providers.py`),
 but it hasn't yet been run against a live deployment.
 
 ```bash
@@ -126,21 +127,51 @@ end to end with the official MCP Python SDK client.
 | **Index** | FHIR resources become citable chunks: one per lab result, allergy and encounter, and one per paragraph of a note. Each chunk is tagged `structured` / `narrative` / `ocr` |
 | **Retrieve** | BM25 with a clinical synonym table ("kidney" → creatinine, eGFR, BUN). It's **filtered to one patient identity before scoring**, and that identity includes records merged by an A40. OCR'd outside records rank below authenticated VA sources |
 | **Screen** | Instruction-like text in the evidence is quarantined (prompt-injection defense) |
-| **Generate** | A pluggable provider: an `extractive` deterministic baseline (offline, grounded by construction), or `azure-openai`. If the hosted model fails, the assistant **falls back** to the baseline |
+| **Generate** | A pluggable provider: an `extractive` deterministic baseline (offline, grounded by construction), `ollama` (local open-weight models), or `azure-openai`. If the model fails, the assistant **falls back** to the baseline |
 | **Verify** | Each sentence must cite evidence, and every number in it must appear in the cited source. Unsupported sentences are removed. SSNs are scrubbed. Treatment directives are flagged |
 | **Audit** | One `AuditEvent` per question: the user, the patient, every resource disclosed, and the model used |
 | **Evaluate** | `eval/gold.json` holds 14 cases: recall, A1c trend across VA and HIE sources, outside medications and problems, abstention, adversarial SSN extraction, and the injection case. Results go to `eval/report.md`, and CI fails the build if any case fails |
 
-## Results (extractive baseline, synthetic gold set)
+## Results: real models, run locally with Ollama
 
-| Evidence recall | Answer recall | Abstention | Injection contained | Groundedness | p95 latency |
-|---|---|---|---|---|---|
-| 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | < 1 ms |
+The same 14-case gold set, run against open-weight models served by
+[Ollama](https://ollama.com) on one laptop (Apple M4 Max, 36 GB). No cloud account, and
+nothing leaves the machine. Temperature 0, single run each; per-case detail is in
+`eval/report-*.md`.
 
-14/14 cases pass. The gold set is deliberately small and is built from the same synthetic patient, so these
-numbers show the *harness* works. They are not evidence of clinical performance. The point
-of the harness is that a hosted model, or a vendor's product, has to clear the same bar on
-VA's own de-identified cases. `docs/ARCHITECTURE.md §6` proposes the thresholds.
+| Provider | Passed | Evidence recall | Answer recall | Groundedness | Abstention | Safety | Injection contained | p50 latency | Failed cases |
+|---|---|---|---|---|---|---|---|---|---|
+| extractive baseline | 14/14 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | < 1 ms | - |
+| `gemma4:26b` | 14/14 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.0 s | - |
+| `llama3.1:8b` | 13/14 | 1.00 | 0.91 | 0.88 | 1.00 | 1.00 | 1.00 | 1.4 s | meds-01 |
+| `gpt-oss:20b` | 12/14 | 0.91 | 0.82 | 0.89 | 1.00 | 1.00 | 1.00 | 1.6 s | plan-01, elig-01 |
+| `qwen3:8b` | 11/14 | 0.82 | 0.73 | 0.86 | 1.00 | 1.00 | 1.00 | 1.1 s | echo-01, meds-01, hie-01 |
+
+```bash
+ollama pull llama3.1:8b
+python3 -m hl7bridge eval --provider ollama --model llama3.1:8b   # writes eval/report-ollama-llama3.1-8b.md
+```
+
+Ollama "cloud" models (e.g. `gpt-oss:120b-cloud`) run off-machine, so the provider refuses
+them unless explicitly allowed.
+
+**What the first real run caught.** It scored 7/14 on `llama3.1:8b`, and each failure was
+traced before anything changed:
+
+| Finding | Kind | Fix |
+|---|---|---|
+| Model cited the lab comment for a value that was in a different result | Real model error | None: the verifier removed it, as designed |
+| Model concluded A1c "showed no change" (8.1 → 8.9), uncited | Real model error | None: removed as uncited; prompt now asks for values with dates rather than trend judgments |
+| Model gave a correct date taken from the evidence header; verifier only checked the chunk text | **Verifier false positive** | Verifier now checks the date the model was shown |
+| Citations written as `[1, 2]` (and `【1】` by gpt-oss) went unparsed | **Verifier gap** | Citation lists and full-width brackets normalized |
+| `qwen3` spent its whole output budget reasoning and returned nothing | **Integration bug** | Reasoning lowered or turned off; an empty answer now triggers the visible fallback |
+| No model said when a medication came only from the community hospital | **Safety gap** | Sentences backed only by HIE/OCR evidence are tagged "(outside record)" in code, not by prompt |
+
+Abstention, PHI safety and injection containment held at 100% for every model from the
+first run. The gold set is small and built around one synthetic patient, so these numbers
+show the harness works and how models differ. They are not evidence of clinical
+performance. Any hosted model or vendor product would have to clear the same bar on VA's
+own de-identified cases; `docs/ARCHITECTURE.md §6` proposes the thresholds.
 
 ## Design brief
 

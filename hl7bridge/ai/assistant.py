@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import base64
 import time
 import uuid
@@ -23,6 +24,25 @@ SUMMARY_FACETS = [
     ("problem list medication", 4),
     ("outside community consult echo", 2),
 ]
+
+
+OUTSIDE_TRUST = {"hie": "outside record", "ocr": "outside record, OCR"}
+
+
+def attribute_outside(check, evidence) -> str:
+    """Tag sentences supported only by non-VA evidence. Done in code, not left to the model:
+    in evaluation no model reliably attributed outside sources on its own."""
+    out = []
+    for s in check.sentences:
+        if not s.supported:
+            continue
+        trusts = {evidence[n - 1].trust for n in s.citations}
+        text = s.text
+        if trusts and trusts <= OUTSIDE_TRUST.keys():
+            tag = OUTSIDE_TRUST["ocr" if "ocr" in trusts else "hie"]
+            text = re.sub(r"(\s*(?:\[\d+(?:\s*,\s*\d+)*\]\s*)+)([.!?]?)$", rf" ({tag})\1\2", text, count=1)
+        out.append(text)
+    return " ".join(out)
 
 
 class ClinicalAssistant:
@@ -100,6 +120,7 @@ class ClinicalAssistant:
             provider = f"extractive (fallback: {type(exc).__name__})"
         t2 = time.perf_counter()
         check = check_output(draft, evidence, strict=strict)
+        answer = attribute_outside(check, evidence) if strict else check.answer
         used = sorted({n for s in check.sentences if s.supported for n in s.citations})
         scores = dict((c.id, s) for c, s in hits)
         result = {
@@ -107,7 +128,7 @@ class ClinicalAssistant:
             "patient": f"Patient/{patient_id}",
             "identity_scope": scope,
             "question": question or "(summary)",
-            "answer": check.answer or "Not found in the record.",
+            "answer": answer or "Not found in the record.",
             "disclaimer": DISCLAIMER,
             "citations": [{"n": n, **evidence[n - 1].to_json(), "score": scores.get(evidence[n - 1].id)}
                           for n in used],

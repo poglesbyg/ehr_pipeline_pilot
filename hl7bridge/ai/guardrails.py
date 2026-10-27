@@ -22,7 +22,7 @@ _INJECTION = re.compile(
     re.I,
 )
 _SSN = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
-_CITE = re.compile(r"\[(\d+)\]")
+_CITE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")  # [1], [1, 2]
 _NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[])")
 _DIRECTIVE = re.compile(r"\b(you should|recommend (starting|stopping|prescribing)|start (him|her|them) on)\b", re.I)
@@ -85,7 +85,7 @@ def check_output(answer: str, evidence: list[Chunk], *, strict: bool = True) -> 
         flags.append("contains treatment directive; summaries must describe, not prescribe")
     checks: list[SentenceCheck] = []
     for raw in (s.strip() for s in _SENTENCE.split(answer.strip()) if s.strip()):
-        cites = [int(c) for c in _CITE.findall(raw)]
+        cites = [int(n) for group in _CITE.findall(raw) for n in group.split(",")]
         reasons = []
         if raw.lower().startswith("not found in the record"):
             checks.append(SentenceCheck(raw, [], True, []))
@@ -95,7 +95,9 @@ def check_output(answer: str, evidence: list[Chunk], *, strict: bool = True) -> 
         bad = [c for c in cites if not 1 <= c <= len(evidence)]
         if bad:
             reasons.append(f"cites unknown evidence {bad}")
-        cited_text = " ".join(evidence[c - 1].text for c in cites if 1 <= c <= len(evidence))
+        # The model sees each chunk's date in its evidence header, so the date counts as evidence too.
+        cited_text = " ".join(f"{evidence[c - 1].date} {evidence[c - 1].text}"
+                              for c in cites if 1 <= c <= len(evidence))
         claim = _CITE.sub("", raw)
         missing = _numbers(claim) - _numbers(cited_text)
         if cites and missing:
