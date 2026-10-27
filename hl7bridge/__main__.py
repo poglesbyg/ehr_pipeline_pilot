@@ -5,6 +5,7 @@
     python -m hl7bridge send FILE.hl7 ...     send over MLLP, print ACKs
     python -m hl7bridge ask "question"        ask the assistant about the sample Veteran
     python -m hl7bridge eval                  run the evaluation harness
+    python -m hl7bridge mcp [--seed]          MCP server on stdio for AI agents
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from .ai.evaluate import run_eval, to_markdown
 from .ai.providers import make_provider
 from .ccda import ingest as ingest_ccda
 from .config import BridgeConfig
+from .mcp import McpServer
 from .mllp import MLLPServer, send
 from .pipeline import Pipeline
 from .server import SAMPLES, App, serve_http
@@ -76,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("ask")
     _add_provider_args(p)
     p.add_argument("question", nargs="?", default="")
+    p = sub.add_parser("mcp", help="MCP server on stdio (read-only unless --allow-write)")
+    p.add_argument("--db", default=":memory:")
+    p.add_argument("--seed", action="store_true", help="load the synthetic sample feeds on start")
+    p.add_argument("--allow-write", action="store_true", help="expose ingest_hl7v2 / ingest_ccda tools")
+    _add_provider_args(p)
     p = sub.add_parser("eval")
     p.add_argument("--gold", default=str(ROOT / "eval" / "gold.json"))
     p.add_argument("--out", help="default: eval/report.md, or eval/report-<provider>.md for hosted/local models")
@@ -101,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             pass
         finally:
             mllp.stop()
+        return 0
+
+    if args.cmd == "mcp":
+        # stdout is the protocol channel: nothing else may print there.
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
+        if args.seed:
+            _seed(app, quiet=True)
+        McpServer(app, allow_write=args.allow_write).serve()
         return 0
 
     if args.cmd == "convert":

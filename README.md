@@ -56,7 +56,8 @@ python3 -m hl7bridge send samples/02_oru_r01_bmp.hl7      # MLLP client, prints 
 python3 -m hl7bridge convert samples/01_adt_a01_admit.hl7 # dry-run: print the FHIR Bundle
 python3 -m hl7bridge ask "Was the potassium really elevated?"
 python3 -m hl7bridge eval                                 # writes eval/report.md
-python3 -m unittest discover -s tests -t .                # 67 tests, ~1 s
+python3 -m hl7bridge mcp --seed                           # MCP server on stdio for AI agents
+python3 -m unittest discover -s tests -t .                # 78 tests, ~1 s
 curl -X POST --data-binary @samples/hie/10_ccd_three_rivers.xml http://127.0.0.1:8080/hie/ccda
 docker build -t hl7bridge . && docker run -p 127.0.0.1:8080:8080 hl7bridge
 ```
@@ -70,6 +71,37 @@ but it hasn't yet been run against a live deployment.
 export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.us   # Azure Government
 export AZURE_OPENAI_DEPLOYMENT=<deployment>  AZURE_OPENAI_API_KEY=<key>
 ```
+
+---
+
+## Use it from an AI agent (MCP)
+
+`python3 -m hl7bridge mcp` runs a Model Context Protocol server on stdio. It's the same record
+and the same guardrails the dashboard uses, exposed as tools an agent can call:
+
+| Tool | What it does | Writes? |
+|---|---|---|
+| `find_patient` | Look up by ICN, DFN, `system\|value` or family name; reports MPI merges | no |
+| `search_record` | Patient-scoped evidence with lineage and trust tier; injected text is quarantined, never returned | no |
+| `ask_record` | Cited answer; unsupported sentences removed; "Not found in the record." instead of guessing | no |
+| `convert_hl7v2` / `convert_ccda` | Dry-run mapping to a US Core Bundle, plus the ACK and validation | no |
+| `ingest_hl7v2` / `ingest_ccda` | Commit to the record. **Only exposed with `--allow-write`** | yes |
+
+Every tool call that discloses patient data writes an `AuditEvent` naming the agent
+(`mcp:<client name>`, plus `BRIDGE_MCP_USER` for the human it acts for) and the query.
+
+Register it with Claude Code from the repo root:
+
+```bash
+claude mcp add hl7bridge -e PYTHONPATH="$PWD" -- python3 -m hl7bridge mcp --seed
+```
+
+Add `--provider ollama --model gemma4:26b` to have `ask_record` answer with a local model
+instead of the extractive baseline. The same guardrails apply either way.
+
+Any other MCP client uses the same command (`python3 -m hl7bridge mcp --seed`, with
+`PYTHONPATH` set to the repo). The server is tested with protocol-level unit tests and
+end to end with the official MCP Python SDK client.
 
 ---
 
@@ -170,14 +202,15 @@ hl7bridge/
   store.py        SQLite FHIR store: versions, conditional ops, FHIRPath Patch, search
   pipeline.py     parse -> dedupe -> map -> validate -> commit -> ACK, redacted ledger
   mllp.py         asyncio MLLP listener + client
+  mcp.py          MCP server (stdio JSON-RPC): patient-scoped, audited, read-only by default
   server.py       FHIR REST + HL7-over-HTTP + assistant API + dashboard
   ai/             index, guardrails, providers, assistant, evaluate
   static/         dashboard
 samples/          11 synthetic VistA-style feeds (tools/generate_samples.py)
 samples/hie/      synthetic C-CDA from a fictional community hospital
 eval/             gold questions + generated report
-tests/            67 tests: parser, mappings, C-CDA, pipeline, transports, guardrails,
-                  Azure provider contract (mock endpoint), eval
+tests/            78 tests: parser, mappings, C-CDA, pipeline, transports, guardrails,
+                  Azure provider contract (mock endpoint), MCP protocol, eval
 .github/          CI: tests on Python 3.10-3.13, eval as a release gate
 Dockerfile        non-root, standard-library-only image
 ```

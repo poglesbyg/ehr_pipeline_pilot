@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import time
 import uuid
@@ -71,6 +72,26 @@ class ClinicalAssistant:
                     refs.append(f"Patient/{other['id']}")
         return refs
 
+    def search(self, patient_id: str, query: str, *, k: int = 8, user: str = "pilot-clinician") -> dict:
+        """Retrieval only: screened, patient-scoped evidence with lineage. Audited like ``ask``."""
+        t0 = time.perf_counter()
+        scope = self.identity(patient_id)
+        hits = self.index.search(scope, query, k=k)
+        hits.sort(key=lambda h: h[0].trust == "ocr")
+        screen = screen_evidence([c for c, _ in hits])
+        scores = dict((c.id, s) for c, s in hits)
+        result = {
+            "patient": f"Patient/{patient_id}",
+            "identity_scope": scope,
+            "question": query,
+            "results": [{"n": i, **c.to_json(), "score": scores[c.id]} for i, c in enumerate(screen.allowed, 1)],
+            "quarantined": screen.quarantined,
+            "provider": "none (retrieval only)",
+            "timing_ms": {"total": round((time.perf_counter() - t0) * 1000, 2)},
+        }
+        self._audit({**result, "citations": result["results"]}, user)
+        return result
+
     def ask(self, patient_id: str, question: str = "", *, user: str = "pilot-clinician",
             strict: bool = True) -> dict:
         t0 = time.perf_counter()
@@ -132,7 +153,8 @@ class ClinicalAssistant:
             "agent": [{"who": {"display": user}, "requestor": True},
                       {"who": {"display": f"model:{result['provider']}"}, "requestor": False}],
             "source": {"observer": {"display": "hl7bridge clinical assistant"}},
-            "entity": [{"what": {"reference": result["patient"]}, "role": {"code": "1", "display": "Patient"}},
+            "entity": [{"what": {"reference": result["patient"]}, "role": {"code": "1", "display": "Patient"},
+                        "query": base64.b64encode(result["question"].encode()).decode()},
                        *[{"what": {"reference": c["resource"]}, "role": {"code": "4", "display": "Domain Resource"}}
                          for c in result["citations"]]],
         })
