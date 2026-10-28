@@ -215,6 +215,7 @@ class Mapper:
             ("ORU", "R01"): self._oru,
             ("MDM", "T02"): self._mdm,
             ("MDM", "T04"): self._mdm,
+            ("MDM", "T11"): self._mdm_cancel,
         }
         # Locally defined Z-segments. VistA feeds carry site-specific Z-segments; each one
         # gets an explicit handler rather than being silently dropped.
@@ -298,6 +299,21 @@ class Mapper:
                      "value": txa.get(12)}
             doc["identifier"] = [ident]
         ctx.add(doc, txa, identifier=ident)
+
+    def _mdm_cancel(self, ctx: _Context) -> None:
+        """Document retracted (entered in error): mark it so it leaves the index on commit."""
+        pid = ctx.require("PID")
+        txa = ctx.require("TXA")
+        if not txa.get(12):
+            raise MappingError("TXA-12 unique document number is required to cancel a document",
+                               code="101", location="TXA-12")
+        self._patient(ctx, pid, mode="create-if-absent")
+        system = ctx.config.local_code_system(f"tiu-{ctx.msg.sending_facility}")
+        patch = {"resourceType": "Parameters", "parameter": [{"name": "operation", "part": [
+            {"name": "type", "valueCode": "replace"},
+            {"name": "path", "valueString": "DocumentReference.status"},
+            {"name": "value", "valueCode": "entered-in-error"}]}]}
+        ctx.add(patch, txa, mode="patch", patch_query=f"DocumentReference?identifier={system}|{txa.get(12)}")
 
     # -- resource builders ------------------------------------------------
     def _patient(self, ctx: _Context, pid: Segment, mode: str = "upsert") -> str:

@@ -74,6 +74,12 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
 .trust { font-size: 10.5px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--line); margin-left: 6px; }
 .trust.ocr { color: var(--warn); border-color: var(--warn); }
 .trust.hie { color: var(--accent); border-color: var(--accent); }
+.trust.protected { color: #fff; background: #8a2be2; border-color: #8a2be2; }
+.trust.lowocr { color: #fff; background: var(--warn); border-color: var(--warn); }
+.trust.copies { color: var(--muted); }
+.launch { font-size: 12px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+.launch.denied { border-color: var(--bad); color: var(--bad); }
+.launch label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; display: block; margin-bottom: 3px; }
 .meter { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
 .meter > i { display: block; height: 100%; background: var(--good); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; }
@@ -137,10 +143,14 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
     <div class="grid" style="align-content:start">
       <div class="card">
         <h2>Ask the record</h2>
-        <div class="row" style="margin-bottom:8px">
-          <select id="patient" style="font:inherit;max-width:340px"></select>
-          <span class="muted" id="scope"></span>
+        <div class="row" style="margin-bottom:8px;align-items:flex-end">
+          <div><label class="muted" style="font-size:11px;display:block">Signed in as (SSO stand-in)</label>
+            <select id="user" style="font:inherit;max-width:280px"></select></div>
+          <div><label class="muted" style="font-size:11px;display:block">Patient (EHR launch stand-in)</label>
+            <select id="patient" style="font:inherit;max-width:340px"></select></div>
         </div>
+        <div class="launch" id="launch">Not launched.</div>
+        <span class="muted" id="scope"></span>
         <form id="ask-form" class="row">
           <input type="text" id="q" placeholder="e.g. How is kidney function?  (leave blank to summarize)" style="flex:1">
           <button class="btn primary">Ask</button>
@@ -254,7 +264,7 @@ async function refresh() {
   const total = Object.values(s.resources).reduce((a, b) => a + b, 0);
   $("#stats").innerHTML = [
     [s.messages.accepted || 0, "accepted"], [(s.messages.error || 0) + (s.messages.rejected || 0), "NAK'd"],
-    [total, "FHIR resources"], [s.evidence_chunks, "evidence chunks"], [s.provider, "model"],
+    [total, "FHIR resources"], [`${s.evidence_chunks} / ${s.indexed_patients}`, "chunks / patients indexed"], [s.provider, "model"],
   ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${l}</span></div>`).join("");
   $("#ledger").innerHTML = msgs.length ? msgs.map((m, i) => `<tr class="click" data-i="${i}">
     <td class="mono">${esc(m.received_at.slice(11, 23))}</td><td class="mono">${esc(m.control_id)}</td>
@@ -331,21 +341,41 @@ const SUGGEST = ["", "How is kidney function?", "Was the potassium really elevat
 $("#suggest").innerHTML = SUGGEST.map(q => `<button class="btn" data-q="${esc(q)}">${esc(q || "Summarize patient")}</button>`).join("");
 document.querySelectorAll("#suggest button").forEach(b => b.onclick = () => { $("#q").value = b.dataset.q; ask(); });
 
+let launched = false;
 async function loadPatients() {
-  const ps = await api("/api/patients");
-  const cur = $("#patient").value;
-  $("#patient").innerHTML = ps.length ? ps.map(p => `<option value="${p.id}">${esc(p.name)} · ${esc(p.birthDate || "")} · ICN ${esc(p.icn || "—")}${p.active ? "" : " (merged)"}</option>`).join("")
+  const [ps, users] = await Promise.all([api("/api/patients"), api("/api/users")]);
+  const cur = $("#patient").value, curUser = $("#user").value;
+  $("#patient").innerHTML = ps.filter(p => p.icn && p.active).length
+    ? ps.filter(p => p.icn && p.active).map(p => `<option value="${esc(p.icn)}">${esc(p.name)} · ${esc(p.birthDate || "")} · ICN ${esc(p.icn)}</option>`).join("")
     : `<option value="">No patients — ingest the sample feeds first</option>`;
+  $("#user").innerHTML = users.map(u => `<option value="${esc(u.user)}">${esc(u.user)}${u.authorizations.length ? " · 7332: " + esc(u.authorizations.join(",")) : ""}</option>`).join("");
   if (cur) $("#patient").value = cur;
+  if (curUser) $("#user").value = curUser;
+  if (!launched) await launch();
 }
+
+async function launch() {
+  // The server resolves the ICN, checks access and binds a session; asks never carry a patient id.
+  const r = await api("/launch", { method: "POST", body: JSON.stringify({ user: $("#user").value, icn: $("#patient").value }) });
+  launched = r.resourceType !== "OperationOutcome";
+  $("#launch").className = "launch" + (launched ? "" : " denied");
+  $("#launch").innerHTML = launched
+    ? `<label>Launch context (server-side session)</label>${esc(r.clinician)} → ICN <span class="mono">${esc(r.icn)}</span> · identity spans ${r.identity_scope.length} record(s) · 7332 authorizations: ${r.authorizations.length ? esc(r.authorizations.join(", ")) : "none"}`
+    : `<label>Launch refused</label>${esc(r.issue[0].diagnostics)} · the attempt was audited`;
+  $("#answer").className = "empty";
+  $("#answer").textContent = launched ? "Ask a question. Every sentence cites its evidence, and each citation traces back to the source message." : "No access: nothing can be asked about this patient.";
+  $("#guard").textContent = "—"; $("#evidence").textContent = "—";
+}
+$("#user").onchange = launch;
+$("#patient").onchange = launch;
 
 let lastAnswer = null;
 async function ask(e) {
   e?.preventDefault();
-  if (!$("#patient").value) await loadPatients();
-  const patient = $("#patient").value; if (!patient) return;
+  if (!launched) await loadPatients();
+  if (!launched) return;
   $("#answer").innerHTML = '<span class="muted">Retrieving evidence…</span>';
-  const r = await api("/ai/ask", { method: "POST", body: JSON.stringify({ patient, question: $("#q").value }) });
+  const r = await api("/ai/ask", { method: "POST", body: JSON.stringify({ question: $("#q").value }) });
   if (r.resourceType === "OperationOutcome") { $("#answer").textContent = r.issue[0].diagnostics; return; }
   lastAnswer = r;
   const ocr = new Set(r.citations.filter(c => c.trust === "ocr").map(c => c.n));
@@ -353,7 +383,7 @@ async function ask(e) {
     .map(n => `<span class="cite${ocr.has(+n) ? " ocr" : ""}" data-n="${n}">${n}</span>`).join(""));
   $("#answer").className = "";
   $("#answer").innerHTML = `<div class="answer">${html}</div><div class="disclaimer">${esc(r.disclaimer)}</div>
-    <div class="muted" style="font-size:12px;margin-top:8px">${esc(r.provider)} · retrieval ${r.timing_ms.retrieval} ms · generation ${r.timing_ms.generation} ms · ${r.evidence_considered} evidence chunks considered · audit event recorded</div>`;
+    <div class="muted" style="font-size:12px;margin-top:8px">${esc(r.provider)}${r.model_version ? " (" + esc(r.model_version) + ")" : ""} · ${esc(r.clinician)} · retrieval ${r.timing_ms.retrieval} ms · generation ${r.timing_ms.generation} ms · ${r.evidence_considered} evidence chunks considered · audit event recorded</div>`;
   $("#scope").textContent = r.identity_scope.length > 1 ? `identity spans ${r.identity_scope.length} merged records` : "";
   const g = r.guardrails, pct = Math.round(g.groundedness * 100);
   $("#guard").innerHTML = `<dl class="kv">
@@ -364,7 +394,10 @@ async function ask(e) {
     <dt>Flags</dt><dd>${g.flags.length ? g.flags.map(esc).join("<br>") : "none"}</dd></dl>
     ${g.quarantined.map(q => `<div class="quar">⚠ Quarantined before the model saw it: <b>${esc(q.reason)}</b><br><span class="mono">${esc(q.label)}</span></div>`).join("")}`;
   $("#evidence").innerHTML = r.citations.length ? r.citations.map(c => `<div class="ev" data-n="${c.n}">
-      <div><span class="n">[${c.n}]</span>${esc(c.text)}<span class="trust ${c.trust}">${esc(c.trust)}</span></div>
+      <div><span class="n">[${c.n}]</span>${esc(c.text)}<span class="trust ${c.trust}">${esc(c.trust)}</span>${
+        (c.protected || []).map(p => `<span class="trust protected" title="38 USC 7332">${esc(p)} · 7332</span>`).join("")}${
+        c.ocr_confidence != null && c.ocr_confidence < 0.8 ? `<span class="trust lowocr">OCR ${c.ocr_confidence.toFixed(2)} · check page ${c.page}</span>` : ""}${
+        c.copies > 1 ? `<span class="trust copies">copied forward ×${c.copies - 1}</span>` : ""}</div>
       <div class="lab mono">${esc(c.label)} → ${esc(c.resource)}</div><div class="src"></div></div>`).join("")
     : '<span class="muted">No evidence cited.</span>';
   document.querySelectorAll(".cite, .ev").forEach(el => el.onclick = () => focusCitation(+el.dataset.n));

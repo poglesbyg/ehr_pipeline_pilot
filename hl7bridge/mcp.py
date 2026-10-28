@@ -1,7 +1,10 @@
 """MCP server (stdio): lets an AI agent use the record the same way the dashboard does.
 
-Tools are patient-scoped and run through the same guardrails as the dashboard. Every
-disclosure is written as an AuditEvent that names the agent. The server is read-only by
+Tools are patient-scoped and run through the same guardrails as the dashboard. The agent acts
+for one clinician (``BRIDGE_MCP_USER``, default ``dr-primary``) and gets exactly that
+clinician's access, including 38 USC 7332 authorizations. ``--launch-icn`` binds the session
+to a single patient, as an EHR launch would. Every disclosure, and every denied attempt, is
+written as an AuditEvent naming both the clinician and the agent. The server is read-only by
 default; conversion tools are dry runs, and ingest tools exist only with ``--allow-write``.
 
 Transport is newline-delimited JSON-RPC 2.0 on stdin/stdout, so stdout carries protocol
@@ -19,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, TextIO
 
 from . import ccda
+from .ai.access import AccessDenied
 from .server import App
 from .validate import validate_bundle
 
@@ -49,10 +53,20 @@ READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": T
 
 
 class McpServer:
-    def __init__(self, app: App, *, allow_write: bool = False):
+    def __init__(self, app: App, *, allow_write: bool = False, launch_icn: str | None = None,
+                 user: str | None = None):
         self.app = app
         self.allow_write = allow_write
         self.client = "unknown-client"
+        # In deployment the clinician comes from the OAuth/SMART token; the pilot takes it from env.
+        self.clinician = user or os.environ.get("BRIDGE_MCP_USER", "dr-primary")
+        self.bound_patient = None
+        if launch_icn:
+            try:
+                self.bound_patient = app.assistant.resolve_icn(launch_icn)
+                app.assistant.authorize(self.clinician, self.bound_patient, agent="mcp:launch")
+            except AccessDenied as exc:
+                raise SystemExit(f"launch refused: {exc}") from exc
         self.tools: dict[str, tuple[dict, Callable[[dict], dict]]] = {}
         self._register()
 
@@ -114,13 +128,13 @@ class McpServer:
 
     # -- tools ----------------------------------------------------------------
     @property
-    def user(self) -> str:
-        # In deployment the human comes from the OAuth/SMART token; the pilot takes it from env.
-        human = os.environ.get("BRIDGE_MCP_USER")
-        return f"mcp:{self.client}" + (f" on behalf of {human}" if human else "")
+    def agent(self) -> str:
+        return f"mcp:{self.client}"
 
     def _patient_id(self, raw: str) -> str:
         pid = (raw or "").strip().removeprefix("Patient/")
+        if self.bound_patient and pid != self.bound_patient:
+            raise ToolError("This session is bound to one patient by its launch context; other patients are refused.")
         if not pid or self.app.store.read("Patient", pid) is None:
             raise ToolError(f"Patient/{pid} not found. Use find_patient to get a valid patient_id.")
         return pid
@@ -135,7 +149,12 @@ class McpServer:
         if family:
             params["family"] = family
         rows = {p["id"] for p in self.app.store.search("Patient", params)}
-        patients = [p for p in self.app.patients() if p["id"] in rows]
+        policy = self.app.assistant.policy
+        clinician = policy.clinician(self.clinician) if self.clinician in policy.clinicians else None
+        # Only reveal patients this clinician may see (no enumeration), and only the bound one if launched.
+        patients = [p for p in self.app.patients() if p["id"] in rows and clinician is not None
+                    and clinician.may_see({p["icn"]} if p["icn"] else set())
+                    and (not self.bound_patient or p["id"] == self.bound_patient)]
         self._audit_lookup(patients, f"identifier={ident} family={family}".strip())
         return {"patients": [{"patient_id": p["id"], "name": p["name"], "birth_date": p["birthDate"],
                               "gender": p["gender"], "icn": p["icn"], "active": p["active"],
@@ -147,16 +166,17 @@ class McpServer:
         if not query:
             raise ToolError("query is required.")
         k = max(1, min(int(args.get("k", 8)), 25))
-        r = self.app.assistant.search(pid, query, k=k, user=self.user)
+        r = self.app.assistant.search(pid, query, k=k, user=self.clinician, agent=self.agent)
         return {"patient": r["patient"], "identity_scope": r["identity_scope"],
                 "results": [_citation(c) for c in r["results"]], "quarantined": r["quarantined"]}
 
     def ask_record(self, args: dict) -> dict:
         pid = self._patient_id(args.get("patient_id", ""))
-        r = self.app.assistant.ask(pid, args.get("question", "") or "", user=self.user)
+        r = self.app.assistant.ask(pid, args.get("question", "") or "", user=self.clinician, agent=self.agent)
         return {"answer": r["answer"], "disclaimer": r["disclaimer"],
                 "citations": [_citation(c) for c in r["citations"]],
-                "guardrails": r["guardrails"], "provider": r["provider"], "identity_scope": r["identity_scope"]}
+                "guardrails": r["guardrails"], "provider": r["provider"], "model_version": r["model_version"],
+                "identity_scope": r["identity_scope"]}
 
     def convert_hl7v2(self, args: dict) -> dict:
         r = self.app.pipeline.convert(args.get("message", ""))
@@ -197,7 +217,8 @@ class McpServer:
             "subtype": [{"system": "http://hl7.org/fhir/restful-interaction", "code": "search-type"}],
             "action": "E", "outcome": "0",
             "recorded": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "agent": [{"who": {"display": self.user}, "requestor": True}],
+            "agent": [{"who": {"display": self.clinician}, "requestor": True},
+                      {"who": {"display": self.agent}, "requestor": False}],
             "source": {"observer": {"display": "hl7bridge MCP server"}},
             "entity": [{"query": base64.b64encode(query.encode()).decode(), "role": {"code": "24", "display": "Query"}},
                        *[{"what": {"reference": f"Patient/{p['id']}"}, "role": {"code": "1", "display": "Patient"}}
@@ -233,7 +254,7 @@ class McpServer:
                 return _error(mid, -32602, "arguments must be an object")
             try:
                 data = self.tools[name][1](args)
-            except ToolError as exc:
+            except (ToolError, AccessDenied) as exc:
                 return _result(mid, {"content": [{"type": "text", "text": str(exc)}], "isError": True})
             except Exception as exc:  # never crash the session on one bad call
                 log.exception("tool %s failed", name)
@@ -265,7 +286,9 @@ class McpServer:
 
 def _citation(c: dict) -> dict:
     return {"n": c["n"], "text": c["text"], "kind": c["kind"], "trust": c["trust"], "date": c["date"],
-            "resource": c["resource"], "source": c["source"], "label": c["label"]}
+            "resource": c["resource"], "source": c["source"], "label": c["label"], "flags": c.get("flags", []),
+            "protected": c.get("protected", []), "ocr_confidence": c.get("ocr_confidence"),
+            "copies": c.get("copies", 1)}
 
 
 def _result(mid, result: dict) -> dict:

@@ -2,8 +2,15 @@
 
 Each chunk keeps its FHIR reference *and* the HL7 segment it came from, so any sentence a
 model writes can be traced to ``VISTA LAB 999-LAB-0042 OBX[3]`` rather than "the record".
-Retrieval is always filtered to one patient before scoring - cross-patient leakage is
-structurally impossible, not merely unlikely.
+Retrieval is filtered to one patient identity, and to the 38 USC 7332 labels the clinician is
+authorized for, *before* scoring. The assistant checks every hit again afterwards.
+
+Other clinical-text rules applied here:
+* each chunk is indexed with a short context header (kind, note type), so "denies chest pain"
+  is never matched without knowing which note it came from;
+* OCR confidence is kept per chunk, and low-confidence text is flagged instead of trusted;
+* entered-in-error resources produce no chunks, so a retraction leaves the index on commit;
+* copied-forward paragraphs collapse to the earliest copy, with the later copies counted.
 """
 
 from __future__ import annotations
@@ -13,6 +20,11 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+
+from ..sensitivity import labels_of
+
+LOW_OCR_CONFIDENCE = 0.80
+_OCR_MARK = re.compile(r"^\[OCR(?: page (\d+))?,? confidence ([0-9.]+)\]\s*", re.I)
 
 _TOKEN = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
 _STOP = {"the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "is", "was", "what",
@@ -59,6 +71,11 @@ class Chunk:
     label: str = ""
     trust: str = "structured"  # structured | narrative | hie | ocr
     flags: list[str] = field(default_factory=list)
+    protected: list[str] = field(default_factory=list)  # 7332 labels, e.g. ["ETH"]
+    ocr_confidence: float | None = None
+    page: int | None = None
+    copies: int = 1  # copied-forward duplicates collapsed into this chunk
+    header: str = ""  # contextual header used for indexing, not shown as evidence
 
     def to_json(self) -> dict:
         return dict(self.__dict__)
@@ -112,10 +129,11 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
     rtype, rid = res["resourceType"], res["id"]
     ref = f"{rtype}/{rid}"
     patient = _patient_of(res)
-    if patient is None:
+    if patient is None or res.get("status") == "entered-in-error":
         return []
     source = res.get("meta", {}).get("source", "")
-    base = dict(patient=patient, resource=ref, source=source, label=_label(source))
+    base = dict(patient=patient, resource=ref, source=source, label=_label(source),
+                protected=sorted(labels_of(res)))
     if source.startswith("urn:ccda:"):
         base["trust"] = "hie"
 
@@ -191,10 +209,20 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
         title = att.get("title") or _concept_text(res.get("type"))
         date = (res.get("date") or res.get("context", {}).get("period", {}).get("start", ""))[:10]
         trust = "ocr" if "OCR" in title.upper() or "[OCR" in body else "narrative"
-        chunks = []
+        chunks, confidence, page = [], None, None
         for i, line in enumerate(s for s in re.split(r"\n+", body) if s.strip()):
-            chunks.append(Chunk(f"{ref}#p{i + 1}", kind="note", text=line.strip(), date=date,
-                                trust=trust, **{**base, "label": f"{title} · {base['label']} · ¶{i + 1}"}))
+            line = line.strip()
+            if (mark := _OCR_MARK.match(line)):  # confidence applies until the next page marker
+                page = int(mark[1]) if mark[1] else (page or 1)
+                confidence = float(mark[2])
+                line = line[mark.end():]
+            flags = []
+            if confidence is not None and confidence < LOW_OCR_CONFIDENCE:
+                flags.append(f"low OCR confidence {confidence:.2f}: verify against original page {page}")
+            where = f"p{page} ¶{i + 1}" if page else f"¶{i + 1}"
+            chunks.append(Chunk(f"{ref}#p{i + 1}", kind="note", text=line, date=date, trust=trust,
+                                ocr_confidence=confidence, page=page, flags=flags, header=f"note {title}",
+                                **{**base, "label": f"{title} · {base['label']} · {where}"}))
         return chunks
 
     if rtype == "Patient":
@@ -211,6 +239,16 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
             return []
         return [Chunk(ref, kind="demographics", text="Eligibility: " + ", ".join(facts) + ".", **base)]
     return []
+
+
+def _shingles(text: str, n: int = 4) -> set[tuple[str, ...]]:
+    words = re.findall(r"[a-z0-9.]+", text.lower())
+    return {tuple(words[i:i + n]) for i in range(max(1, len(words) - n + 1))}
+
+
+def near_duplicate(a: str, b: str, threshold: float = 0.8) -> bool:
+    sa, sb = _shingles(a), _shingles(b)
+    return bool(sa and sb) and len(sa & sb) / len(sa | sb) >= threshold
 
 
 class EvidenceIndex:
@@ -233,21 +271,38 @@ class EvidenceIndex:
             self._tokens.pop(cid, None)
             self._by_patient[chunk.patient].discard(cid)
         for chunk in resource_to_chunks(res):
+            chunk.header = chunk.header or chunk.kind
             self.chunks[chunk.id] = chunk
-            self._tokens[chunk.id] = Counter(tokenize(chunk.text))
+            self._tokens[chunk.id] = Counter(tokenize(f"{chunk.header} {chunk.text}"))
             self._by_patient[chunk.patient].add(chunk.id)
             self._by_resource[ref].add(chunk.id)
 
-    def _ids(self, patients: str | list[str]) -> set[str]:
+    def drop_patient(self, patient: str) -> None:
+        for cid in self._by_patient.pop(patient, set()):
+            chunk = self.chunks.pop(cid, None)
+            self._tokens.pop(cid, None)
+            if chunk:
+                self._by_resource.get(chunk.resource.split("#")[0], set()).discard(cid)
+
+    def patients(self) -> set[str]:
+        return {p for p, ids in self._by_patient.items() if ids}
+
+    def _ids(self, patients: str | list[str], allow: frozenset[str] | None = None) -> set[str]:
         patients = [patients] if isinstance(patients, str) else patients
-        return set().union(*(self._by_patient.get(p, set()) for p in patients))
+        ids = set().union(*(self._by_patient.get(p, set()) for p in patients))
+        if allow is not None:  # 7332: protected evidence is filtered out before scoring
+            ids = {c for c in ids if set(self.chunks[c].protected) <= allow}
+        return ids
 
     def patient_chunks(self, patients: str | list[str]) -> list[Chunk]:
         return sorted((self.chunks[c] for c in self._ids(patients)), key=lambda c: (c.date, c.id))
 
-    def search(self, patients: str | list[str], query: str, k: int = 8) -> list[tuple[Chunk, float]]:
-        """``patients`` is one reference, or a merged identity's set of references."""
-        ids = self._ids(patients)
+    def search(self, patients: str | list[str], query: str, k: int = 8,
+               allow: frozenset[str] | None = frozenset()) -> list[tuple[Chunk, float]]:
+        """``patients`` is one reference, or a merged identity's set of references.
+        ``allow`` is the set of 7332 labels the clinician may read; ``None`` disables the
+        filter (index maintenance only, never a clinician request)."""
+        ids = self._ids(patients, allow)
         if not ids:
             return []
         terms = tokenize(query)
@@ -274,4 +329,22 @@ class EvidenceIndex:
                     score *= 0.75  # prefer structured/authenticated sources on ties
                 scored.append((chunk, round(score, 4)))
         scored.sort(key=lambda x: -x[1])
-        return scored[:k]
+        return self._collapse_copies(scored)[:k]
+
+    @staticmethod
+    def _collapse_copies(scored: list[tuple[Chunk, float]]) -> list[tuple[Chunk, float]]:
+        """Copied-forward text: keep the earliest copy (with its date), count the rest."""
+        kept: list[tuple[Chunk, float]] = []
+        for chunk, score in scored:
+            twin = next((i for i, (c, _) in enumerate(kept)
+                         if c.kind == chunk.kind == "note" and near_duplicate(c.text, chunk.text)), None)
+            if twin is None:
+                kept.append((chunk, score))
+                continue
+            first, best = kept[twin]
+            earliest = min((first, chunk), key=lambda c: c.date or "9999")
+            copies = first.copies + 1
+            flags = [f for f in earliest.flags if not f.startswith("copied forward")]
+            flags.append(f"copied forward into {copies - 1} later note(s); earliest copy shown")
+            kept[twin] = (Chunk(**{**earliest.__dict__, "copies": copies, "flags": flags}), max(best, score))
+        return kept

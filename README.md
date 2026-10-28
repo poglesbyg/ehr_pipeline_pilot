@@ -24,7 +24,7 @@ equivalents.
 ## Two-minute demo
 
 ```bash
-python3 -m hl7bridge serve --seed      # loads 11 VistA feeds + 1 HIE C-CDA, then serves:
+python3 -m hl7bridge serve --seed      # loads 14 VistA feeds + 1 HIE C-CDA, then serves:
 #   Dashboard  http://127.0.0.1:8080/
 #   FHIR R4    http://127.0.0.1:8080/fhir/metadata
 #   MLLP       127.0.0.1:2575
@@ -34,8 +34,9 @@ python3 -m hl7bridge serve --seed      # loads 11 VistA feeds + 1 HIE C-CDA, the
    (`PID-3 · Patient Identifier List`), along with the transaction plan, the validation
    outcome, and the ACK that goes back to VistA. The two error feeds come back as `AE`
    (missing PID-3, with `ERR|||101^`) and `AR` (unsupported `SIU^S12`).
-2. **Clinical assistant tab.** Ask *"How is kidney function?"* Each sentence carries a
-   citation chip. Click one and the original VistA lab message opens with `OBX[8]`
+2. **Clinical assistant tab.** Pick who you're signed in as (an SSO stand-in) and the patient
+   (an EHR-launch stand-in). The server checks access and binds a session; questions never
+   carry a patient id. Ask *"How is kidney function?"* Each sentence carries a citation chip. Click one and the original VistA lab message opens with `OBX[8]`
    highlighted, next to the FHIR Observation it became.
 3. Ask *"What allergies does the patient have?"* The sulfa allergy is known **only** from the
    community hospital's C-CDA, so it's cited to `C-CDA · TRCH-CCD-… · allergies/entry[1]`
@@ -48,6 +49,15 @@ python3 -m hl7bridge serve --seed      # loads 11 VistA feeds + 1 HIE C-CDA, the
    side, which is exactly the reconciliation gap a clinician needs to see.
 5. Ask *"Does the patient have a pacemaker?"* The answer is **"Not found in the record."**
    The assistant abstains instead of guessing.
+6. Ask *"Is the patient taking naltrexone or being treated for alcohol use?"* as `dr-primary`:
+   **"Not found."** Those records are protected under 38 USC 7332 and filtered out before
+   retrieval. Switch to `dr-sud-clinic` (authorized for substance-use records) and the same
+   question returns four cited entries, each badged `ETH · 7332`. Switch to `dr-other-site`
+   and the launch itself is refused and audited.
+7. Ask *"What anticoagulant was listed in the outside consult?"* Page 2 of the fax was read at
+   OCR confidence 0.58 and says "apixaban 0.5 mg" (the real dose is 5 mg). The answer
+   doesn't quote it silently: it's flagged *"low OCR confidence 0.58, verify against
+   original page 2"*.
 
 Other commands:
 
@@ -57,7 +67,7 @@ python3 -m hl7bridge convert samples/01_adt_a01_admit.hl7 # dry-run: print the F
 python3 -m hl7bridge ask "Was the potassium really elevated?"
 python3 -m hl7bridge eval                                 # writes eval/report.md
 python3 -m hl7bridge mcp --seed                           # MCP server on stdio for AI agents
-python3 -m unittest discover -s tests -t .                # 78 tests, ~1 s
+python3 -m unittest discover -s tests -t .                # 100 tests, ~2 s
 curl -X POST --data-binary @samples/hie/10_ccd_three_rivers.xml http://127.0.0.1:8080/hie/ccda
 docker build -t hl7bridge . && docker run -p 127.0.0.1:8080:8080 hl7bridge
 ```
@@ -127,28 +137,37 @@ end to end with the official MCP Python SDK client.
 
 | Stage | What happens |
 |---|---|
-| **Index** | FHIR resources become citable chunks: one per lab result, allergy and encounter, and one per paragraph of a note. Each chunk is tagged `structured` / `narrative` / `ocr` |
-| **Retrieve** | BM25 with a clinical synonym table ("kidney" → creatinine, eGFR, BUN). It's **filtered to one patient identity before scoring**, and that identity includes records merged by an A40. OCR'd outside records rank below authenticated VA sources |
+| **Authorize** | The clinician must be allowed to see the patient, or nothing runs. The ICN is format-validated first, which also blocks filter injection. Denials fail closed and are audited |
+| **Index (on demand)** | A patient's record is indexed on first request, cached, and dropped when new data commits. Each lab, allergy, problem, medication and note paragraph becomes a citable chunk carrying its source, date, trust tier (`structured`/`narrative`/`hie`/`ocr`), OCR confidence, and 38 USC 7332 labels. Retracted (entered-in-error) records produce no chunks |
+| **Retrieve** | BM25 with clinical synonyms and a context header per chunk. **Filtered to one patient identity and to the 7332 labels the clinician may read, before scoring**; the identity includes records merged by an A40. Copied-forward paragraphs collapse to the earliest copy |
+| **Check again** | Every hit is re-checked against the same scope after retrieval. A foreign or unreadable chunk makes the request fail closed, so one filter bug can't leak a record |
 | **Screen** | Instruction-like text in the evidence is quarantined (prompt-injection defense) |
 | **Generate** | A pluggable provider: an `extractive` deterministic baseline (offline, grounded by construction), `ollama` (local open-weight models), or `azure-openai`. If the model fails, the assistant **falls back** to the baseline |
-| **Verify** | Each sentence must cite evidence, and every number in it must appear in the cited source. Unsupported sentences are removed. SSNs are scrubbed. Treatment directives are flagged |
-| **Audit** | One `AuditEvent` per question: the user, the patient, every resource disclosed, and the model used |
-| **Evaluate** | `eval/gold.json` holds 14 cases: recall, A1c trend across VA and HIE sources, outside medications and problems, abstention, adversarial SSN extraction, and the injection case. Results go to `eval/report.md`, and CI fails the build if any case fails |
+| **Verify** | Each sentence must cite evidence, and every number **and every medication** in it must appear in the cited source (brand names normalized to ingredients). Unsupported sentences are removed and fabricated medications counted. Outside-only and low-OCR-confidence statements are tagged in code. SSNs are scrubbed; treatment directives flagged |
+| **Audit** | One `AuditEvent` per question or denial: clinician, agent, patient, query, every resource disclosed, and the model **and version** that answered |
+| **Evaluate** | `eval/gold.json` holds 18 cases stratified by source type. Retrieval is scored separately from generation; fabricated medications are counted per statement with a rule-of-three bound; a 6-attack scope suite must be fully blocked. CI fails the build if any case fails |
 
 ## Results: real models, run locally with Ollama
 
-The same 14-case gold set, run against open-weight models served by
+The 18-case gold set plus the 6-attack scope suite, run against open-weight models served by
 [Ollama](https://ollama.com) on one laptop (Apple M4 Max, 36 GB). No cloud account, and
 nothing leaves the machine. Temperature 0, single run each; per-case detail is in
-`eval/report-*.md`.
+`eval/report-*.md`. Expect a case or so of run-to-run variation.
 
-| Provider | Passed | Evidence recall | Answer recall | Groundedness | Abstention | Safety | Injection contained | p50 latency | Failed cases |
-|---|---|---|---|---|---|---|---|---|---|
-| extractive baseline | 14/14 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | < 1 ms | - |
-| `gemma4:26b` | 14/14 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.0 s | - |
-| `llama3.1:8b` | 13/14 | 1.00 | 0.91 | 0.88 | 1.00 | 1.00 | 1.00 | 1.4 s | meds-01 |
-| `gpt-oss:20b` | 12/14 | 0.91 | 0.82 | 0.89 | 1.00 | 1.00 | 1.00 | 1.6 s | plan-01, elig-01 |
-| `qwen3:8b` | 11/14 | 0.82 | 0.73 | 0.86 | 1.00 | 1.00 | 1.00 | 1.1 s | echo-01, meds-01, hie-01 |
+| Provider | Passed | Retrieval recall@k | Answer recall (retrieval successes) | Groundedness | Fabricated meds (of med statements) | Abstention | Safety | Scope attacks blocked | p50 | Failed cases |
+|---|---|---|---|---|---|---|---|---|---|---|
+| extractive baseline | 18/18 | 1.00 | 1.00 | 1.00 | 0 of 30 | 1.00 | 1.00 | 6/6 | < 1 ms | - |
+| `gemma4:26b` | 18/18 | 1.00 | 1.00 | 1.00 | 0 of 12 | 1.00 | 1.00 | 6/6 | 1.0 s | - |
+| `llama3.1:8b` | 17/18 | 1.00 | 0.92 | 0.89 | 0 of 12 | 1.00 | 1.00 | 6/6 | 1.1 s | meds-01 |
+| `qwen3:8b` | 15/18 | 1.00 | 0.77 | 0.91 | 0 of 5 | 1.00 | 1.00 | 6/6 | 0.8 s | echo-01, meds-01, hie-01 |
+| `gpt-oss:20b` | 13/18 | 1.00 | 0.62 | 0.89 | 0 of 8 | 1.00 | 1.00 | 6/6 | 1.1 s | elig-01, allergy-01, meds-01, hie-01, fax-02 |
+
+**How to read it.** Retrieval recall is 1.00 for every model, so every failure is a
+*generation* failure; the fix is the model or prompt, not chunking or search. Scope,
+abstention, PHI safety and 7332 protection hold at 100% for every model because they are
+enforced in code, not by the model. Zero fabricated medications in 30 baseline statements
+bounds the true rate at about 10% (rule of three); a pilot needs a few hundred statements
+to claim 1%.
 
 ```bash
 ollama pull llama3.1:8b
@@ -169,6 +188,8 @@ traced before anything changed:
 | Citations written as `[1, 2]` (and `【1】` by gpt-oss) went unparsed | **Verifier gap** | Citation lists and full-width brackets normalized |
 | `qwen3` spent its whole output budget reasoning and returned nothing | **Integration bug** | Reasoning lowered or turned off; an empty answer now triggers the visible fallback |
 | No model said when a medication came only from the community hospital | **Safety gap** | Sentences backed only by HIE/OCR evidence are tagged "(outside record)" in code, not by prompt |
+| Models answered in bullet lists, and the verifier treated a whole list as one sentence, so one citation vouched for every item and the low-OCR warning landed on the wrong line | **Verifier bug** (found when the 18-case set was added) | Each line and list item is verified on its own |
+| Uncited mentions of real medications were counted as "fabricated" | **Metric overstated** | "Fabricated" now means named in *no* evidence; a mis-cited real drug is still removed, as a citation error |
 
 Abstention, PHI safety and injection containment held at 100% for every model from the
 first run. The gold set is small and built around one synthetic patient, so these numbers
@@ -177,6 +198,10 @@ performance. Any hosted model or vendor product would have to clear the same bar
 own de-identified cases; `docs/ARCHITECTURE.md §6` proposes the thresholds.
 
 ## Design brief
+
+[`docs/DESIGN_WALKTHROUGH.md`](docs/DESIGN_WALKTHROUGH.md) is the end-to-end design answer
+(clarify, size, flow, patient-scope and evaluation deep dives, risks, verification), with each
+claim linked to the code and test that backs it, and the Azure Government production pattern.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers:
 
@@ -198,19 +223,21 @@ hl7bridge/
   config.py       naming systems, SSN policy, timezone (env-overridable)
   mapper.py       ADT / ORU / MDM -> US Core transaction Bundles (+ Provenance)
   ccda.py         HIE C-CDA (CCD) -> US Core, with the same lineage and ledger
+  sensitivity.py  38 USC 7332 labels (substance use, HIV, sickle cell) applied at ingestion
   validate.py     pre-commit US Core checks -> OperationOutcome
   store.py        SQLite FHIR store: versions, conditional ops, FHIRPath Patch, search
   pipeline.py     parse -> dedupe -> map -> validate -> commit -> ACK, redacted ledger
   mllp.py         asyncio MLLP listener + client
   mcp.py          MCP server (stdio JSON-RPC): patient-scoped, audited, read-only by default
   server.py       FHIR REST + HL7-over-HTTP + assistant API + dashboard
-  ai/             index, guardrails, providers, assistant, evaluate
+  ai/             access (policy, ICN), index, guardrails, providers, assistant, evaluate
   static/         dashboard
-samples/          11 synthetic VistA-style feeds (tools/generate_samples.py)
+samples/          14 synthetic VistA-style feeds (tools/generate_samples.py)
 samples/hie/      synthetic C-CDA from a fictional community hospital
 eval/             gold questions + generated report
-tests/            78 tests: parser, mappings, C-CDA, pipeline, transports, guardrails,
-                  Azure provider contract (mock endpoint), MCP protocol, eval
+tests/            100 tests: parser, mappings, C-CDA, pipeline, transports, guardrails,
+                  patient scope and 7332, OCR/copy/retraction risks, Azure provider
+                  (Entra token, 429 retry, mock endpoint), MCP protocol, eval
 .github/          CI: tests on Python 3.10-3.13, eval as a release gate
 Dockerfile        non-root, standard-library-only image
 ```

@@ -17,6 +17,7 @@ import re
 import sys
 from pathlib import Path
 
+from .ai.access import AccessDenied
 from .ai.evaluate import run_eval, to_markdown
 from .ai.providers import make_provider
 from .ccda import ingest as ingest_ccda
@@ -77,11 +78,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=2575)
     p = sub.add_parser("ask")
     _add_provider_args(p)
+    p.add_argument("--user", default="dr-primary", help="pilot clinician: dr-primary, dr-sud-clinic, dr-other-site")
     p.add_argument("question", nargs="?", default="")
     p = sub.add_parser("mcp", help="MCP server on stdio (read-only unless --allow-write)")
     p.add_argument("--db", default=":memory:")
     p.add_argument("--seed", action="store_true", help="load the synthetic sample feeds on start")
     p.add_argument("--allow-write", action="store_true", help="expose ingest_hl7v2 / ingest_ccda tools")
+    p.add_argument("--launch-icn", help="bind the session to one patient, as an EHR launch would")
+    p.add_argument("--user", help="clinician the agent acts for (default: BRIDGE_MCP_USER or dr-primary)")
     _add_provider_args(p)
     p = sub.add_parser("eval")
     p.add_argument("--gold", default=str(ROOT / "eval" / "gold.json"))
@@ -115,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
         if args.seed:
             _seed(app, quiet=True)
-        McpServer(app, allow_write=args.allow_write).serve()
+        McpServer(app, allow_write=args.allow_write, launch_icn=args.launch_icn, user=args.user).serve()
         return 0
 
     if args.cmd == "convert":
@@ -135,7 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "ask":
         app = _loaded_app(args)
         pid = app.store.search("Patient", {"identifier": SAMPLE_ICN})[0]["id"]
-        r = app.assistant.ask(pid, args.question, user="cli")
+        try:
+            r = app.assistant.ask(pid, args.question, user=args.user, agent="cli")
+        except AccessDenied as exc:
+            print(f"refused: {exc} (audited)", file=sys.stderr)
+            return 3
         print(f"\n{r['answer']}\n\n{r['disclaimer']}\n")
         for c in r["citations"]:
             print(f"  [{c['n']}] {c['label']}  ({c['resource']})")

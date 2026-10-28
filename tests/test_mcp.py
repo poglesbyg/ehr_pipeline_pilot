@@ -131,10 +131,33 @@ class McpTests(unittest.TestCase):
         ccd = (ROOT / "samples" / "hie" / "10_ccd_three_rivers.xml").read_text()
         reply = server.handle(rpc(1, "tools/call", {"name": "ingest_ccda", "arguments": {"document": ccd}}))
         self.assertEqual(reply["result"]["structuredContent"]["status"], "accepted")
-        self.assertEqual(store.counts()["Condition"], 3)
+        self.assertEqual(store.counts()["Condition"], 4)
         self.assertEqual(self.server.handle(rpc(1, "tools/call", {"name": "ingest_ccda",
                                                                   "arguments": {"document": ccd}}))["error"]["code"],
                          -32602)
+
+    def test_clinician_identity_and_launch_binding(self):
+        other = McpServer(self.app, user="dr-other-site")
+        other.handle(rpc(0, "initialize", {"protocolVersion": "2025-06-18", "clientInfo": {"name": "x"}}))
+        found = other.handle(rpc(1, "tools/call", {"name": "find_patient", "arguments": {"identifier": ICN}}))
+        self.assertEqual(found["result"]["structuredContent"]["patients"], [])  # no enumeration
+        denied = other.handle(rpc(2, "tools/call", {"name": "ask_record",
+                                                    "arguments": {"patient_id": self.pid(), "question": "meds"}}))
+        self.assertTrue(denied["result"]["isError"])
+        bound = McpServer(self.app, launch_icn=ICN)
+        stranger = self.app.store.create({"resourceType": "Patient", "identifier": [{"system": "x", "value": "y"}]})
+        r = bound.handle(rpc(3, "tools/call", {"name": "search_record",
+                                               "arguments": {"patient_id": stranger["id"], "query": "x"}}))
+        self.assertIn("bound to one patient", r["result"]["content"][0]["text"])
+
+    def test_protected_records_follow_the_clinician(self):
+        q = {"patient_id": self.pid(), "question": "Is the patient taking naltrexone?"}
+        primary = self.call("ask_record", **q)["structuredContent"]
+        self.assertNotIn("naltrexone", primary["answer"].lower())
+        sud = McpServer(self.app, user="dr-sud-clinic")
+        r = sud.handle(rpc(1, "tools/call", {"name": "ask_record", "arguments": q}))["result"]["structuredContent"]
+        self.assertIn("naltrexone", r["answer"].lower())
+        self.assertIn("ETH", r["citations"][0]["protected"])
 
     def test_serve_loop_handles_parse_errors_and_batches(self):
         lines = "\n".join([

@@ -1,8 +1,11 @@
 """HTTP surface: a FHIR R4 REST API, HL7 v2 ingest over HTTP, the clinical assistant, and
 the operator dashboard. Standard library only, so the pilot runs on any VA-approved Python.
 
-Binds to localhost by default. The pilot has no end-user authentication; in deployment the
-API sits behind VA SSOi / Entra ID with SMART on FHIR scopes (see docs/ARCHITECTURE.md).
+Binds to localhost by default. The clinical assistant follows the launch pattern: ``POST
+/launch`` stands in for VA single sign-on plus the EHR launch, checks access server-side and
+sets an HttpOnly session; ``/ai/ask`` then takes the patient from that session only, never
+from the request body. The raw FHIR REST API has no end-user authorization in the pilot; in
+deployment it sits behind SSOi / Entra ID with SMART on FHIR scopes (docs/ARCHITECTURE.md).
 """
 
 from __future__ import annotations
@@ -10,15 +13,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
+import threading
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+from .ai.access import AccessDenied
 from .ai.assistant import ClinicalAssistant
 from .ai.providers import Provider
 from .ccda import ingest as ingest_ccda
 from .config import BridgeConfig
 from .pipeline import Pipeline
+from .sensitivity import label_bundle
 from .store import FhirStore, StoreError
 
 STATIC = Path(__file__).parent / "static"
@@ -39,6 +47,24 @@ class App:
         self.config = config or BridgeConfig()
         self.assistant = ClinicalAssistant(store, provider)
         self.pipeline = Pipeline(store, self.config, on_commit=self.assistant.reindex)
+        self._sessions: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def launch(self, user: str, icn: str) -> tuple[str, dict]:
+        """SSO + EHR launch stand-in: resolve and authorize, then bind a server-side session."""
+        pid = self.assistant.resolve_icn(icn)
+        clinician, scope = self.assistant.authorize(user, pid, agent="launch")
+        context = {"user": clinician.user_id, "clinician": clinician.display, "icn": icn,
+                   "patient": pid, "identity_scope": scope,
+                   "authorizations": sorted(clinician.authorizations)}
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self._sessions[token] = context
+        return token, context
+
+    def session(self, token: str | None) -> dict | None:
+        with self._lock:
+            return self._sessions.get(token or "")
 
     def capability_statement(self) -> dict:
         return {
@@ -87,10 +113,16 @@ def make_handler(app: App):
         def log_message(self, fmt, *args):  # route through logging; no query strings (may hold PHI)
             log.info("%s %s -> %s", self.command, urlsplit(self.path).path, args[1] if len(args) > 1 else "")
 
-        def _send(self, status: int, body, ctype: str = "application/json") -> None:
+        def _cookie(self) -> str | None:
+            jar = SimpleCookie(self.headers.get("Cookie", ""))
+            return jar["pilot_launch"].value if "pilot_launch" in jar else None
+
+        def _send(self, status: int, body, ctype: str = "application/json", cookie: str | None = None) -> None:
             data = body if isinstance(body, bytes) else (
                 body.encode() if isinstance(body, str) else json.dumps(body, indent=1).encode())
             self.send_response(status)
+            if cookie:
+                self.send_header("Set-Cookie", f"pilot_launch={cookie}; HttpOnly; SameSite=Strict; Path=/")
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
@@ -137,21 +169,23 @@ def make_handler(app: App):
                 if path == "/api/stats":
                     return self._send(200, {"resources": app.store.counts(), "messages": app.store.message_stats(),
                                             "evidence_chunks": len(app.assistant.index),
+                                            "indexed_patients": app.assistant.indexed_patients,
                                             "provider": app.assistant.provider.name,
                                             "supported_messages": app.pipeline.mapper.supported})
                 if path == "/api/messages":
                     return self._send(200, app.store.list_messages(int(query.get("limit", 100))))
-                if path == "/api/patients":
+                if path == "/api/patients":  # EHR patient list stand-in for the launch picker
                     return self._send(200, app.patients())
+                if path == "/api/users":  # SSO stand-in: the pilot's clinicians
+                    return self._send(200, [{"user": c.user_id, "display": c.display,
+                                             "authorizations": sorted(c.authorizations)}
+                                            for c in app.assistant.policy.clinicians.values()])
                 if path == "/api/samples":
                     return self._send(200, sorted(p.name for p in SAMPLES.glob("*.hl7"))
                                       + sorted(f"hie/{p.name}" for p in (SAMPLES / "hie").glob("*.xml")))
                 if m := re.fullmatch(r"/api/samples/((?:hie/)?[\w.-]+\.(?:hl7|xml))", path):
                     f = SAMPLES / m[1]
                     return self._send(200, f.read_text(), "text/plain") if f.is_file() else self._outcome(404, "no sample")
-                if m := re.fullmatch(r"/api/evidence/Patient/([\w-]+)", path):
-                    scope = app.assistant.identity(m[1])
-                    return self._send(200, [c.to_json() for c in app.assistant.index.patient_chunks(scope)])
                 return self._outcome(404, f"no route for {path}", "not-found")
             except StoreError as exc:
                 return self._outcome(exc.status, str(exc), exc.code)
@@ -169,20 +203,26 @@ def make_handler(app: App):
                                                        on_commit=app.assistant.reindex))
                 if path == "/fhir":
                     bundle = json.loads(body)
+                    label_bundle(bundle)
                     response = app.store.transaction(bundle)
                     app.assistant.reindex([e["response"]["location"].rsplit("/_history", 1)[0]
                                            for e in response["entry"]])
                     return self._send(200, response, FHIR_JSON)
-                if path == "/ai/ask":
+                if path == "/launch":
                     req = json.loads(body or "{}")
-                    if not req.get("patient"):
-                        return self._outcome(400, "patient is required", "required")
-                    pid = req["patient"].removeprefix("Patient/")
-                    if app.store.read("Patient", pid) is None:
-                        return self._outcome(404, f"Patient/{pid} not found", "not-found")
-                    return self._send(200, app.assistant.ask(pid, req.get("question", ""),
-                                                             user=req.get("user", "dashboard")))
+                    token, context = app.launch(str(req.get("user", "")), str(req.get("icn", "")))
+                    return self._send(200, context, cookie=token)
+                if path == "/ai/ask":
+                    context = app.session(self._cookie())
+                    if context is None:
+                        return self._outcome(401, "no launch context: POST /launch first", "login")
+                    # Patient scope comes only from the server-side launch; any patient in the body is ignored.
+                    req = json.loads(body or "{}")
+                    return self._send(200, app.assistant.ask(context["patient"], str(req.get("question", "")),
+                                                             user=context["user"], agent="dashboard"))
                 return self._outcome(404, f"no route for {path}", "not-found")
+            except AccessDenied as exc:
+                return self._outcome(403, str(exc), "forbidden")
             except json.JSONDecodeError as exc:
                 return self._outcome(400, f"invalid JSON: {exc}", "structure")
             except StoreError as exc:

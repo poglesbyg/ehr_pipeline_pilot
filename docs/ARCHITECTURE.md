@@ -90,12 +90,13 @@ endpoints, HIE gateways, and the fax/OCR intake.
 
 | Control | How the pilot implements it | Production hardening |
 |---|---|---|
-| **AC-3** Access enforcement | Retrieval is filtered to one patient's identity before scoring (`EvidenceIndex.search`), so cross-patient evidence can't enter a prompt | Mandatory security filter in AI Search; SMART on FHIR patient/user scopes |
+| **AC-3** Access enforcement | Server-side access check before any retrieval (`AccessPolicy`, fails closed); the patient comes from a server-side launch session, never the request body; the ICN is format-validated; retrieval is filtered to the patient identity *and* to readable 7332 labels before scoring; every hit is checked again afterwards (`ScopeViolation`) | EHR access decision and break-the-glass; mandatory security filter in AI Search; SMART on FHIR patient/user scopes |
+| **AC-3 / PT** 38 USC 7332 | Substance use, HIV and sickle cell records labeled at ingestion (`meta.security`), hidden unless the clinician is authorized | Labels from VistA sensitivity flags and a terminology service; rules reviewed with the privacy officer |
 | **AC-4** Information flow | Untrusted outside text is quarantined before it reaches the model (`guardrails.screen_evidence`) | Add a classifier-based prompt-shield service in front |
 | **AC-6** Least privilege | The MCP server is read-only by default; ingest tools aren't even listed without `--allow-write`; conversion tools are dry runs | Per-agent OAuth scopes (e.g. `patient/*.read`); separate write identity |
 | **AU-2 / AU-3 / AU-12** Audit | `AuditEvent` per question, from the dashboard or an MCP agent: who asked (agent and the human it acts for), the query text, which patient, which resources were disclosed, which model answered. `Provenance` per inbound message | Ship to the VA SOC SIEM; immutable storage |
 | **AU-10** Non-repudiation | Every resource carries `meta.source` back to an MSH-10 control ID and segment | Sign the ledger entries |
-| **IA-2 / IA-5** | *Not in pilot* (localhost only) | VA SSOi / Entra ID, PIV-backed; managed identity to the model endpoint, no keys |
+| **IA-2 / IA-5** | Pilot stand-in: `POST /launch` names a pilot clinician; the Azure provider accepts an Entra ID token provider (Government audience) and treats API keys as local-testing only | VA SSOi / Entra ID, PIV-backed; managed identity to the model endpoint; keys disabled on the resource |
 | **SC-8 / SC-13** Transmission | *Pilot:* MLLP in clear on localhost | MLLP over TLS 1.2+ or site-to-site VPN; private endpoints for all PaaS |
 | **SC-28** Data at rest | SSN dropped at the boundary by default; ledger stores a redacted copy | CSP encryption with VA-managed keys (CMK) |
 | **SI-10** Input validation | C-CDA documents with DTD/ENTITY declarations rejected (no XXE / entity expansion). Strict HL7 parsing, table validation (0001/0004/0357), pre-commit US Core validation; a malformed message returns AE/AR and nothing partial is written | Add the official HL7 FHIR Validator in CI |
@@ -151,7 +152,9 @@ These are stated deliberately, because an honest pilot is easier to authorize.
 - `ZEL` is a pilot-defined Z-segment that shows the extension pattern. It isn't VistA's actual layout.
 - The pre-commit validator covers the US Core rules this pilot relies on. The official FHIR Validator should run in CI.
 - BM25 with a small synonym table stands in for hybrid vector search. It's adequate for the demo, but it isn't production recall.
-- The gold set is 14 cases on one synthetic patient, so it proves the *harness*. It is not evidence of clinical performance.
+- The gold set is 18 cases on one synthetic patient, so it proves the *harness*. It is not evidence of clinical performance.
+- The access policy is a static table of three pilot clinicians, and 7332 labeling is rule-based (ICD-10 prefixes and keywords). Both are stand-ins for the EHR's access decision and VistA's own sensitivity flags.
+- Medication names are normalized with a small brand-to-ingredient table, not RxNorm.
 - The Azure OpenAI provider is tested against a mock of the chat-completions contract, not yet against a live deployment.
 - C-CDA patient matching uses the ICN when the partner returns it; real-world correlation goes through the MPI.
-- No authentication. Localhost binding only.
+- No real authentication: the launch is a stand-in for SSO and the EHR launch. The raw FHIR REST API has no end-user authorization. Localhost binding only.

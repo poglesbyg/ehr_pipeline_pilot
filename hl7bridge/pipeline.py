@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from .config import BridgeConfig
 from .hl7v2 import HL7ParseError, Message, build_ack
 from .mapper import Mapper, MappingError
+from .sensitivity import LABELS, label_bundle
 from .store import FhirStore, StoreError
 from .validate import has_errors, validate_bundle
 
@@ -113,6 +114,8 @@ class Pipeline:
             status = "rejected" if code == "AR" else "error"
             return done(status, self._ack(msg, code, str(exc), exc.code),
                         outcome=_outcome("processing", str(exc), exc.location))
+        for code, n in label_bundle(mapped.bundle).items():
+            mapped.warnings.append(f"{n} resource(s) labeled {code}: {LABELS[code]}")
         outcome = validate_bundle(mapped.bundle)
         if has_errors(outcome):
             text = _first_issue(outcome)

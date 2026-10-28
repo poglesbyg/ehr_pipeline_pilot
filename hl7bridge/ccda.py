@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from . import vocab
 from .config import BridgeConfig
+from .sensitivity import LABELS, label_bundle
 from .store import FhirStore, StoreError
 from .validate import has_errors, validate_bundle
 
@@ -304,7 +305,10 @@ def to_bundle(xml_text: str, config: BridgeConfig | None = None) -> tuple[dict, 
         "entity": [{"role": "source", "what": {"identifier": {"system": "urn:ietf:rfc:3986", "value": doc.source_base},
                                                "display": f"{title} from {doc.custodian} (HIE)"}}],
     }, None)
-    return {"resourceType": "Bundle", "type": "transaction", "entry": doc.entries}, doc.warnings, doc
+    bundle = {"resourceType": "Bundle", "type": "transaction", "entry": doc.entries}
+    for code, n in label_bundle(bundle).items():
+        doc.warnings.append(f"{n} resource(s) labeled {code}: {LABELS[code]}")
+    return bundle, doc.warnings, doc
 
 
 def ingest(store: FhirStore, xml_text: str, config: BridgeConfig | None = None, on_commit=None) -> dict:
