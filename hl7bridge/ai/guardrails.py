@@ -58,6 +58,14 @@ DRUGS = {
     "buprenorphine": ["suboxone"], "methadone": [], "gabapentin": ["neurontin"],
     "prednisone": [], "levothyroxine": ["synthroid"], "omeprazole": ["prilosec"],
     "albuterol": [], "tamsulosin": ["flomax"], "sertraline": ["zoloft"], "trazodone": [],
+    "simvastatin": ["zocor"], "pravastatin": [], "acetaminophen": ["tylenol"], "ibuprofen": ["advil", "motrin"],
+    "naproxen": ["aleve"], "nitroglycerin": [], "alendronate": ["fosamax"], "fluticasone": ["flonase"],
+    "budesonide": [], "montelukast": ["singulair"], "loratadine": ["claritin"], "cetirizine": ["zyrtec"],
+    "diphenhydramine": ["benadryl"], "epinephrine": ["epipen"], "cephalexin": ["keflex"], "cefuroxime": [],
+    "azithromycin": ["zithromax"], "doxycycline": [], "ciprofloxacin": ["cipro"], "hydrocodone": ["vicodin"],
+    "oxycodone": ["oxycontin"], "tramadol": [], "morphine": [], "fentanyl": [], "meperidine": [],
+    "norethindrone": [], "levonorgestrel": ["mirena", "liletta"], "estradiol": [], "verapamil": [],
+    "diltiazem": [], "nifedipine": [], "furosemida": [], "hydroxyzine": [], "ondansetron": ["zofran"],
 }
 _BRAND = {brand: ingredient for ingredient, brands in DRUGS.items() for brand in brands}
 _WORD = re.compile(r"[a-z]+")

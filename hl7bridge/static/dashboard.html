@@ -150,6 +150,9 @@ tr.click { cursor: pointer; } tr.click:hover { background: var(--chip); }
             <select id="patient" style="font:inherit;max-width:340px"></select></div>
         </div>
         <div class="launch" id="launch">Not launched.</div>
+        <div class="row" style="margin:-4px 0 10px"><a class="btn" id="smart-btn"
+          href="/smart/start?iss=https%3A%2F%2Flaunch.smarthealthit.org%2Fv%2Fr4%2Ffhir">Launch with SMART on FHIR (public sandbox)</a>
+          <span class="muted" style="font-size:12px">real OAuth 2 + PKCE; the EHR picks the user and patient</span></div>
         <span class="muted" id="scope"></span>
         <form id="ask-form" class="row">
           <input type="text" id="q" placeholder="e.g. How is kidney function?  (leave blank to summarize)" style="flex:1">
@@ -345,8 +348,9 @@ let launched = false;
 async function loadPatients() {
   const [ps, users] = await Promise.all([api("/api/patients"), api("/api/users")]);
   const cur = $("#patient").value, curUser = $("#user").value;
-  $("#patient").innerHTML = ps.filter(p => p.icn && p.active).length
-    ? ps.filter(p => p.icn && p.active).map(p => `<option value="${esc(p.icn)}">${esc(p.name)} · ${esc(p.birthDate || "")} · ICN ${esc(p.icn)}</option>`).join("")
+  const listed = ps.filter(p => p.key && p.active);
+  $("#patient").innerHTML = listed.length
+    ? listed.map(p => `<option value="${esc(p.key)}">${esc(p.name)} · ${esc(p.birthDate || "")} · ${p.icn ? "ICN " + esc(p.icn) : "FHIR " + esc(p.key.split("|")[0].replace("urn:fhir-source:", ""))}</option>`).join("")
     : `<option value="">No patients — ingest the sample feeds first</option>`;
   $("#user").innerHTML = users.map(u => `<option value="${esc(u.user)}">${esc(u.user)}${u.authorizations.length ? " · 7332: " + esc(u.authorizations.join(",")) : ""}</option>`).join("");
   if (cur) $("#patient").value = cur;
@@ -356,11 +360,18 @@ async function loadPatients() {
 
 async function launch() {
   // The server resolves the ICN, checks access and binds a session; asks never carry a patient id.
-  const r = await api("/launch", { method: "POST", body: JSON.stringify({ user: $("#user").value, icn: $("#patient").value }) });
+  const key = $("#patient").value;
+  const body = key.includes("|") ? { user: $("#user").value, identifier: key } : { user: $("#user").value, icn: key };
+  const r = await api("/launch", { method: "POST", body: JSON.stringify(body) });
+  showLaunch(r);
+}
+
+function showLaunch(r) {
   launched = r.resourceType !== "OperationOutcome";
   $("#launch").className = "launch" + (launched ? "" : " denied");
   $("#launch").innerHTML = launched
-    ? `<label>Launch context (server-side session)</label>${esc(r.clinician)} → ICN <span class="mono">${esc(r.icn)}</span> · identity spans ${r.identity_scope.length} record(s) · 7332 authorizations: ${r.authorizations.length ? esc(r.authorizations.join(", ")) : "none"}`
+    ? `<label>Launch context · ${esc(r.via || "pilot launch")}</label>${esc(r.clinician)} → <span class="mono">${esc(r.icn)}</span> · identity spans ${r.identity_scope.length} record(s) · 7332 authorizations: ${r.authorizations.length ? esc(r.authorizations.join(", ")) : "none"}${
+        r.imported ? `<br>Imported from the EHR's FHIR API: ${Object.entries(r.imported).map(([t, n]) => `${n} ${esc(t)}`).join(", ")} · access token discarded` : ""}`
     : `<label>Launch refused</label>${esc(r.issue[0].diagnostics)} · the attempt was audited`;
   $("#answer").className = "empty";
   $("#answer").textContent = launched ? "Ask a question. Every sentence cites its evidence, and each citation traces back to the source message." : "No access: nothing can be asked about this patient.";
@@ -432,6 +443,12 @@ async function loadTypes() {
 }
 
 loadSamples(); refresh();
+if (new URLSearchParams(location.search).has("launched")) {  // back from a SMART launch
+  history.replaceState(null, "", "/");
+  launched = true;  // keep the tab switch from replacing the SMART session with a pilot launch
+  document.querySelector('nav button[data-tab="ai"]').click();
+  api("/api/session").then(showLaunch);
+}
 </script>
 </body>
 </html>

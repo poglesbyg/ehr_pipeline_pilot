@@ -52,7 +52,7 @@ for a request holds only that patient's chunks.
 | Stage | This repo | Production target |
 |---|---|---|
 | VistA feed | `mllp.py`, `hl7v2.py`, `mapper.py`: ADT, ORU, MDM incl. T11 retractions | Same contract, or an integration engine that passes the same golden tests |
-| Oracle Health | `POST /fhir` transactions | Bulk `$export` + SMART on FHIR |
+| Oracle Health / Epic | `fhir_client.py` + `fhir_import.py` + SMART launch (`smart.py`) | Same, plus Backend Services and Bulk `$export` |
 | HIE | `ccda.py` (`POST /hie/ccda`) | XCA query/retrieve, same mapping |
 | Faxes | OCR text with per-page confidence (simulated) | Document Intelligence layout + confidence |
 | Index | `ai/index.py` BM25 with synonyms and context headers | Azure AI Search: hybrid keyword + vector, semantic ranker, patient prefilter |
@@ -65,7 +65,7 @@ A prompt instruction is not a security control. Scope is enforced before the mod
 | Step | Control | Code | Test |
 |---|---|---|---|
 | Sign in | Clinician identity from SSO, never from the request | `POST /launch` (SSO stand-in), `AccessPolicy` | `test_mllp_round_trip_then_fhir_search_and_ask` |
-| Patient context | From the EHR launch, held server-side; `/ai/ask` ignores any patient in the body | `App.launch`, session cookie | same, asserts body patient is ignored |
+| Patient context | From the EHR launch, held server-side; `/ai/ask` ignores any patient in the body. Real SMART App Launch (PKCE): the token's patient is the access decision | `App.complete_smart`, `smart.py`, session cookie | `test_ehr_launch_end_to_end`, `test_launched_user_sees_only_the_launched_patient` |
 | ICN validation | `\d{10}V\d{6}` before use; also blocks filter injection | `access.valid_icn`, `resolve_icn` | `test_icn_validation_blocks_filter_injection` |
 | Access check | Clinician may see this patient, or nothing runs; denials audited | `ClinicalAssistant.authorize` | `test_denials_fail_closed_and_are_audited` |
 | Filter in the index | Patient identity and readable 7332 labels applied before scoring | `EvidenceIndex.search(allow=...)` | `test_protected_records_hidden_without_authorization` |

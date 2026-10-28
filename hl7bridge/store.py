@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS history (
   type TEXT, id TEXT, version INTEGER, last_updated TEXT, body TEXT, PRIMARY KEY (type, id, version));
 CREATE TABLE IF NOT EXISTS idx (type TEXT, id TEXT, param TEXT, system TEXT, value TEXT);
 CREATE INDEX IF NOT EXISTS idx_lookup ON idx (type, param, value);
+CREATE INDEX IF NOT EXISTS idx_owner ON idx (type, id);
 CREATE TABLE IF NOT EXISTS messages (
   control_id TEXT PRIMARY KEY, received_at TEXT, sender TEXT, message_type TEXT, status TEXT,
   ack TEXT, error TEXT, raw_redacted TEXT, resources TEXT, elapsed_ms REAL);
@@ -135,8 +136,10 @@ class FhirStore:
             param = "patient" if name == "subject" else name
             if param in ("patient", "target") and "/" not in raw:
                 raw = f"Patient/{raw}"
-            clause = "SELECT 1 FROM idx i WHERE i.type=r.type AND i.id=r.id AND i.param=?"
-            args.append(param)
+            # Drive each condition from the (type, param, value) index rather than probing it once
+            # per candidate row; at a few thousand resources the difference is seconds per import.
+            clause = "SELECT i.id FROM idx i WHERE i.type=? AND i.param=?"
+            args += [rtype, param]
             if param in ("family", "given"):
                 clause += " AND i.value LIKE ?"
                 args.append(raw.lower() + "%")
@@ -147,7 +150,7 @@ class FhirStore:
             else:
                 clause += " AND i.value=?"
                 args.append(raw)
-            sql += f" AND EXISTS ({clause})"
+            sql += f" AND r.id IN ({clause})"
         count = int(params.get("_count", 100))
         sql += " ORDER BY r.last_updated DESC LIMIT ?"
         args.append(count)

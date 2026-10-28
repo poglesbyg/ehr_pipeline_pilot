@@ -24,9 +24,11 @@ from .ai.access import AccessDenied
 from .ai.assistant import ClinicalAssistant
 from .ai.providers import Provider
 from .ccda import ingest as ingest_ccda
+from .fhir_import import import_resources
 from .config import BridgeConfig
 from .pipeline import Pipeline
 from .sensitivity import label_bundle
+from .smart import SmartError, SmartLauncher, jwt_claims
 from .store import FhirStore, StoreError
 
 STATIC = Path(__file__).parent / "static"
@@ -49,14 +51,40 @@ class App:
         self.pipeline = Pipeline(store, self.config, on_commit=self.assistant.reindex)
         self._sessions: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self.smart = SmartLauncher()
 
-    def launch(self, user: str, icn: str) -> tuple[str, dict]:
-        """SSO + EHR launch stand-in: resolve and authorize, then bind a server-side session."""
-        pid = self.assistant.resolve_icn(icn)
+    def launch(self, user: str, icn: str = "", identifier: str = "") -> tuple[str, dict]:
+        """SSO + EHR launch stand-in: resolve and authorize, then bind a server-side session.
+        The patient is a VA ICN or any ``system|value`` identifier (an Epic/Oracle MRN)."""
+        if identifier:
+            system, _, value = identifier.partition("|")
+            pid = self.assistant.resolve_identifier(system, value)
+        else:
+            pid = self.assistant.resolve_icn(icn)
         clinician, scope = self.assistant.authorize(user, pid, agent="launch")
-        context = {"user": clinician.user_id, "clinician": clinician.display, "icn": icn,
-                   "patient": pid, "identity_scope": scope,
-                   "authorizations": sorted(clinician.authorizations)}
+        return self._bind(clinician, pid, scope, identifier or icn, via="pilot launch (SSO stand-in)")
+
+    def complete_smart(self, code: str, state: str) -> tuple[str, dict]:
+        """Real SMART launch: exchange the code, import the authorized patient's record, and bind a
+        session limited to that patient. The access token is dropped once the import finishes."""
+        token = self.smart.exchange(code, state)
+        warnings: list[str] = []
+        resources = self.smart.fetch_record(token, on_warning=warnings.append)
+        result = import_resources(self.store, resources, token["iss"], config=self.config,
+                                  on_commit=self.assistant.reindex)
+        claims = jwt_claims(token.get("id_token"))
+        who = claims.get("fhirUser") or claims.get("sub") or "unknown user"
+        user_id = f"smart:{who}"
+        clinician = self.assistant.policy.grant_launch(user_id, f"SMART user {who} via {token['iss']}",
+                                                       {result["patient_identifier"]})
+        scope = self.assistant.identity(result["patient"])
+        token.clear()  # no credential to the EHR is kept past the import
+        return self._bind(clinician, result["patient"], scope, result["patient_identifier"],
+                          via="SMART on FHIR launch", imported=result["counts"], warnings=warnings + result["warnings"])
+
+    def _bind(self, clinician, pid: str, scope: list[str], key: str, **extra) -> tuple[str, dict]:
+        context = {"user": clinician.user_id, "clinician": clinician.display, "icn": key, "patient": pid,
+                   "identity_scope": scope, "authorizations": sorted(clinician.authorizations), **extra}
         token = secrets.token_urlsafe(24)
         with self._lock:
             self._sessions[token] = context
@@ -91,9 +119,12 @@ class App:
         out = []
         for p in self.store.all_resources(["Patient"]):
             name = (p.get("name") or [{}])[0]
-            icn = next((i["value"] for i in p.get("identifier", []) if i["system"] == self.config.icn_system), None)
+            idents = [i for i in p.get("identifier", []) if i.get("system") and i.get("value")]
+            icn = next((i["value"] for i in idents if i["system"] == self.config.icn_system), None)
+            key = icn or next((f"{i['system']}|{i['value']}" for i in idents if i["system"].startswith("urn:fhir-source:")),
+                              None)
             out.append({"id": p["id"], "name": f"{' '.join(name.get('given', []))} {name.get('family', '')}".strip(),
-                        "birthDate": p.get("birthDate"), "gender": p.get("gender"), "icn": icn,
+                        "birthDate": p.get("birthDate"), "gender": p.get("gender"), "icn": icn, "key": key,
                         "active": p.get("active", True),
                         "replacedBy": next((l["other"].get("reference") for l in p.get("link", [])
                                             if l["type"] == "replaced-by"), None)})
@@ -116,6 +147,15 @@ def make_handler(app: App):
         def _cookie(self) -> str | None:
             jar = SimpleCookie(self.headers.get("Cookie", ""))
             return jar["pilot_launch"].value if "pilot_launch" in jar else None
+
+        def _redirect(self, location: str, cookie: str | None = None) -> None:
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            if cookie:
+                self.send_header("Set-Cookie", f"pilot_launch={cookie}; HttpOnly; SameSite=Lax; Path=/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _send(self, status: int, body, ctype: str = "application/json", cookie: str | None = None) -> None:
             data = body if isinstance(body, bytes) else (
@@ -176,6 +216,24 @@ def make_handler(app: App):
                     return self._send(200, app.store.list_messages(int(query.get("limit", 100))))
                 if path == "/api/patients":  # EHR patient list stand-in for the launch picker
                     return self._send(200, app.patients())
+                if path in ("/smart/launch", "/smart/start"):  # EHR launch / standalone launch
+                    redirect_uri = f"http://{self.headers.get('Host', 'localhost')}/smart/callback"
+                    try:
+                        return self._redirect(app.smart.authorize_url(query.get("iss", ""), redirect_uri,
+                                                                      query.get("launch") if path == "/smart/launch" else None))
+                    except Exception as exc:  # discovery or network failures surface as an OperationOutcome, not a 500
+                        return self._outcome(400, f"SMART launch failed: {exc}", "security")
+                if path == "/smart/callback":
+                    if query.get("error"):
+                        return self._outcome(403, f"authorization denied: {query.get('error')}", "security")
+                    try:
+                        token, _ = app.complete_smart(query.get("code", ""), query.get("state", ""))
+                    except SmartError as exc:
+                        return self._outcome(403, f"SMART launch failed: {exc}", "security")
+                    return self._redirect("/?launched=1", cookie=token)
+                if path == "/api/session":
+                    context = app.session(self._cookie())
+                    return self._send(200, context) if context else self._outcome(401, "no launch context", "login")
                 if path == "/api/users":  # SSO stand-in: the pilot's clinicians
                     return self._send(200, [{"user": c.user_id, "display": c.display,
                                              "authorizations": sorted(c.authorizations)}
@@ -210,7 +268,8 @@ def make_handler(app: App):
                     return self._send(200, response, FHIR_JSON)
                 if path == "/launch":
                     req = json.loads(body or "{}")
-                    token, context = app.launch(str(req.get("user", "")), str(req.get("icn", "")))
+                    token, context = app.launch(str(req.get("user", "")), str(req.get("icn", "")),
+                                                str(req.get("identifier", "")))
                     return self._send(200, context, cookie=token)
                 if path == "/ai/ask":
                     context = app.session(self._cookie())
