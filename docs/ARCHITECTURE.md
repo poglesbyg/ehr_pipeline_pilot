@@ -139,7 +139,7 @@ Measure on VA's own de-identified gold set. Run `python -m hl7bridge eval` to ge
 | Source | Format / transport | Pilot status | Next step |
 |---|---|---|---|
 | VistA ADT, Lab, TIU | HL7 v2.x over MLLP | **Implemented**: ADT A01/A02/A03/A04/A08/A11/A40, ORU^R01, MDM^T02/T04 | Pharmacy (RDE/RDS), orders (ORM/OMG), problem list |
-| Oracle Health (Federal EHR) | FHIR R4 REST | Store accepts FHIR transactions (`POST /fhir`) | Bulk `$export` into the same store; reconcile identities on ICN |
+| Oracle Health (Federal EHR) | FHIR R4 REST + SMART launch | **Implemented**: FHIR R4 client and SMART App Launch (PKCE), tested against the public SMART sandbox and a mock EHR; same path serves Epic | App registration with the vendor; SMART Backend Services + Bulk `$export` for population loads; reconcile identities on ICN |
 | HIE (eHealth Exchange / Carequality) | C-CDA via IHE XCA | **Implemented** for CCD allergies, problems, medications and results (`POST /hie/ccda`); outside assertions marked `unconfirmed` | Notes, procedures, immunizations, vitals sections; XCA query/retrieve client; reconciliation workflow |
 | Faxed community records | Image/PDF → OCR | Simulated (MDM with OCR text and confidence) | Document Intelligence/Textract; route low-confidence pages to human review |
 | CDW | SQL | Not in scope | Use for eval-set construction and population-level validation only |
@@ -157,4 +157,5 @@ These are stated deliberately, because an honest pilot is easier to authorize.
 - Medication names are normalized with a small brand-to-ingredient table, not RxNorm.
 - The Azure OpenAI provider is tested against a mock of the chat-completions contract, not yet against a live deployment.
 - C-CDA patient matching uses the ICN when the partner returns it; real-world correlation goes through the MPI.
-- No real authentication: the launch is a stand-in for SSO and the EHR launch. The raw FHIR REST API has no end-user authorization. Localhost binding only.
+- Authentication: the SMART launch is real (authorization code + PKCE against the EHR's authorization server); the pilot `/launch` remains as an SSO stand-in for the VA demo. The id_token's signature isn't verified (it's received directly from the token endpoint over TLS, and used only for display and audit). SMART Backend Services (signed JWT client assertions) isn't implemented. The raw FHIR REST API has no end-user authorization. Localhost binding only.
+- The Synthea gold set was written by the same author as the retrieval fixes; it's a regression suite, not an independent benchmark.

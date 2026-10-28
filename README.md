@@ -24,7 +24,7 @@ equivalents.
 ```mermaid
 flowchart TB
     vista["VistA<br/>HL7 v2 over MLLP"]
-    oracle["Oracle Health<br/>FHIR R4"]
+    oracle["Oracle Health · Epic<br/>FHIR R4 + SMART launch"]
     hie["HIE partners<br/>C-CDA"]
     fax["Community faxes<br/>OCR + confidence"]
 
@@ -108,7 +108,7 @@ python3 -m hl7bridge convert samples/01_adt_a01_admit.hl7 # dry-run: print the F
 python3 -m hl7bridge ask "Was the potassium really elevated?"
 python3 -m hl7bridge eval                                 # writes eval/report.md
 python3 -m hl7bridge mcp --seed                           # MCP server on stdio for AI agents
-python3 -m unittest discover -s tests -t .                # 100 tests, ~2 s
+python3 -m unittest discover -s tests -t .                # 115 tests, ~6 s
 curl -X POST --data-binary @samples/hie/10_ccd_three_rivers.xml http://127.0.0.1:8080/hie/ccda
 docker build -t hl7bridge . && docker run -p 127.0.0.1:8080:8080 hl7bridge
 ```
@@ -124,6 +124,55 @@ export AZURE_OPENAI_DEPLOYMENT=<deployment>  AZURE_OPENAI_API_KEY=<key>
 ```
 
 ---
+
+## Connect to an EHR over FHIR R4: Epic, Oracle Health, any SMART server
+
+The pilot pulls real records over FHIR R4 and launches as a SMART on FHIR app, so the same
+code works against VA's Federal EHR (Oracle Health), Epic at community-care partners, or any
+US Core server.
+
+```bash
+# Pull one patient's record (here: the public SMART sandbox, Synthea data) and import it
+python3 -m hl7bridge import-fhir --base https://r4.smarthealthit.org --patient 1f456f0a-acb1-4728-82af-01ca57083c7b
+```
+
+| Capability | Detail |
+|---|---|
+| **SMART App Launch** | EHR launch (`/smart/launch?iss=…&launch=…`) and standalone launch (`/smart/start?iss=…`): authorization code with PKCE (S256), single-use state, issuer allowlist. The token's patient *is* the access decision: the session can see exactly that patient. The record is imported, then the access token is discarded |
+| **FHIR client** | SMART discovery, paged searches (incl. HAPI-style next links), 429/5xx retry honoring Retry-After, `medicationReference` resolved, notes stored as `Binary` fetched and converted (HTML, RTF, plain text; PDFs flagged for OCR). Every followed URL must be on the server's exact origin, so a hostile server can't redirect the bearer token |
+| **Import** | Conditional upserts keyed on the source id (re-launching updates, never duplicates); `meta.source = urn:fhir:<host>#Type/id` lineage; references rewritten, or turned into logical references when the target wasn't imported; SSN, license and passport identifiers dropped; 7332 labels; US Core gaps **tagged, not dropped**, so no clinical fact silently disappears |
+| **Identity** | Not VA-only: launches and panels accept any `system\|value` identifier (e.g. an Epic MRN), with ICNs still strictly validated. A panel can grant a whole identifier space (`system\|*`) |
+
+**Epic specifics, honestly stated.** Epic exposes US Core FHIR R4 and SMART launch, and it
+commonly serves notes as `Binary` attachments (HTML/RTF), which this client handles. Going live
+needs an app registration with Epic (client id, redirect URI, scopes) and, for bulk loads,
+SMART Backend Services (a JWT client assertion signed with the app's key), which isn't
+implemented here. VA's own EHR is Oracle Health; Epic matters through community care, whose
+C-CDA documents are already ingested.
+
+### Synthea at scale
+
+Four Synthea-generated patients pulled from the public SMART sandbox **with this client**
+(5,586 resources; the longest record has 1,682 observations, including 77 urea nitrogen results)
+are kept as offline fixtures in `samples/synthea/`. `tools/make_synthea_gold.py` computes a
+23-case gold set from their structured data: the most recent value of a heavily repeated lab,
+current medications, active and resolved problems, absent conditions, and the latest flu vaccine.
+
+| Retrieval | Synthea retrieval recall@k | Synthea cases passed | VA set |
+|---|---|---|---|
+| Plain BM25 (before) | 0.58 | 15/23 | 18/18 |
+| + series chunks and "current → active" (after) | **1.00** | **23/23** | 18/18 |
+
+The harder set exposed what the VA set could not: with 77 near-identical results, plain
+retrieval returned an arbitrary few and missed the latest; 24 stopped orders of one statin
+crowded out the active medications. The fix is the layered approach from the design: repeated
+results of the same lab, vaccine or medication collapse into one chunk listing values newest
+first, citing the most recent resource. One synonym change briefly broke two VA cases ("taking"
+matched every active drug), which led to *entity anchoring*: a question that names a drug is
+only answered by evidence that mentions it. Caveat: the same author built the system and the
+gold set (the set was generated before the fixes and only its expected-text format changed
+after), so treat this as a regression suite, not an independent benchmark. Both gold sets run in
+CI.
 
 ## Use it from an AI agent (MCP)
 
@@ -264,6 +313,9 @@ hl7bridge/
   config.py       naming systems, SSN policy, timezone (env-overridable)
   mapper.py       ADT / ORU / MDM -> US Core transaction Bundles (+ Provenance)
   ccda.py         HIE C-CDA (CCD) -> US Core, with the same lineage and ledger
+  fhir_client.py  FHIR R4 client: discovery, paging, retry, Binary notes, origin guard
+  fhir_import.py  external FHIR record -> store, with lineage, upserts and privacy filtering
+  smart.py        SMART App Launch (authorization code + PKCE)
   sensitivity.py  38 USC 7332 labels (substance use, HIV, sickle cell) applied at ingestion
   validate.py     pre-commit US Core checks -> OperationOutcome
   store.py        SQLite FHIR store: versions, conditional ops, FHIRPath Patch, search
@@ -275,6 +327,7 @@ hl7bridge/
   static/         dashboard
 samples/          14 synthetic VistA-style feeds (tools/generate_samples.py)
 samples/hie/      synthetic C-CDA from a fictional community hospital
+samples/synthea/  four Synthea patients pulled from the SMART sandbox (offline fixtures)
 eval/             gold questions + generated report
 tests/            100 tests: parser, mappings, C-CDA, pipeline, transports, guardrails,
                   patient scope and 7332, OCR/copy/retraction risks, Azure provider

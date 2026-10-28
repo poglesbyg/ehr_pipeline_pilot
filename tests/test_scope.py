@@ -20,7 +20,7 @@ class ScopeTests(unittest.TestCase):
     def setUp(self):
         self.app = App(FhirStore())
         self.addCleanup(self.app.store.close)
-        _seed(self.app, quiet=True)
+        _seed(self.app, quiet=True, synthea=False)
         self.a = self.app.assistant
         self.pid = self.a.resolve_icn(ICN)
 

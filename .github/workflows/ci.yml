@@ -31,13 +31,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Evaluation harness
+      - name: Evaluation harness (VA feeds, scope attacks)
         run: python -m hl7bridge eval --out eval-report.md
-      - name: Publish report
+      - name: Evaluation harness (Synthea long records via FHIR R4)
+        run: python -m hl7bridge eval --gold eval/gold-synthea.json --out eval-synthea.md
+      - name: Publish reports
         if: always()
-        run: cat eval-report.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat eval-report.md eval-synthea.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: eval-report
-          path: eval-report.md
+          path: |
+            eval-report.md
+            eval-synthea.md

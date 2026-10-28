@@ -26,9 +26,9 @@ from datetime import datetime, timezone
 
 from ..config import BridgeConfig
 from ..store import FhirStore
-from .access import AccessDenied, AccessPolicy, Clinician, ScopeViolation, valid_icn
-from .guardrails import check_output, screen_evidence
-from .index import Chunk, EvidenceIndex, _patient_of
+from .access import AccessDenied, AccessPolicy, Clinician, ScopeViolation, valid_identifier
+from .guardrails import check_output, medications_in, screen_evidence
+from .index import Chunk, EvidenceIndex, _patient_of, resource_to_chunks
 from .providers import ExtractiveProvider, Provider
 
 DISCLAIMER = "AI-generated from the cited record entries for clinician review. Verify against source before acting."
@@ -105,9 +105,9 @@ class ClinicalAssistant:
             if loaded is not None and now - loaded < self.cache_ttl:
                 continue
             self._invalidate(patient)
-            for res in self.store.everything(patient.split("/", 1)[1]):
-                if _patient_of(res) == patient:
-                    self.index.upsert_resource(res)
+            chunks = [c for res in self.store.everything(patient.split("/", 1)[1])
+                      if _patient_of(res) == patient for c in resource_to_chunks(res)]
+            self.index.add_patient_chunks(patient, chunks)
             self._loaded[patient] = now
 
     @property
@@ -124,18 +124,27 @@ class ClinicalAssistant:
                     refs.append(f"Patient/{other['id']}")
         return refs
 
-    def icns(self, scope: list[str]) -> set[str]:
+    def patient_keys(self, scope: list[str]) -> set[str]:
+        """Every identifier of the identity as "system|value", plus bare ICNs (VA panels use them)."""
         out = set()
         for ref in scope:
             res = self.store.read("Patient", ref.split("/", 1)[1]) or {}
-            out |= {i["value"] for i in res.get("identifier", []) if i.get("system") == self.icn_system}
+            for ident in res.get("identifier", []):
+                if ident.get("system") and ident.get("value"):
+                    out.add(f"{ident['system']}|{ident['value']}")
+                    if ident["system"] == self.icn_system:
+                        out.add(ident["value"])
         return out
 
     def resolve_icn(self, icn: str) -> str:
-        """Launch context -> the active Patient id. The ICN is validated before it is used."""
-        if not valid_icn(icn):
+        """VA launch context -> the active Patient id. The ICN is validated before it is used."""
+        return self.resolve_identifier(self.icn_system, icn)
+
+    def resolve_identifier(self, system: str, value: str) -> str:
+        """Launch context (any identifier system) -> the active Patient id, validated first."""
+        if not valid_identifier(system, value, self.icn_system):
             raise AccessDenied("invalid patient identifier")
-        matches = self.store.search("Patient", {"identifier": f"{self.icn_system}|{icn}"})
+        matches = self.store.search("Patient", {"identifier": f"{system}|{value}"})
         if not matches:
             raise AccessDenied("patient not found")
         patient = matches[0]
@@ -148,7 +157,7 @@ class ClinicalAssistant:
                   question: str = "") -> tuple[Clinician, list[str]]:
         scope = self.identity(patient_id)
         try:
-            return self.policy.authorize(user, self.icns(scope)), scope
+            return self.policy.authorize(user, self.patient_keys(scope)), scope
         except AccessDenied as exc:
             self._audit(f"Patient/{patient_id}", question, user, agent, None, [], outcome="8", detail=str(exc))
             raise
@@ -157,6 +166,11 @@ class ClinicalAssistant:
         self._ensure_indexed(scope)
         hits = self.index.search(scope, query, k=k, allow=clinician.authorizations)
         self._verify_scope(hits, scope, clinician)
+        # Entity anchoring: when the question names a drug, only evidence mentioning that drug
+        # answers it. Otherwise "Is the patient taking warfarin?" would be "answered" with whatever
+        # other medications matched the generic words.
+        if (named := medications_in(query)):
+            hits = [(c, s) for c, s in hits if medications_in(c.text) & named]
         return hits
 
     @staticmethod

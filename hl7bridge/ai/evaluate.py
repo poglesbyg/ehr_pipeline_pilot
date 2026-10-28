@@ -36,11 +36,18 @@ def _contains_all(text: str, needles: list[str]) -> bool:
 
 def run_eval(assistant: ClinicalAssistant, gold_path: str | Path) -> dict:
     gold = json.loads(Path(gold_path).read_text())
-    icn = gold["patient_identifier"].split("|", 1)[1]
-    pid = assistant.resolve_icn(icn)
     default_user = gold.get("default_user", "dr-primary")
+    patients: dict[str, str] = {}
+
+    def resolve(key: str) -> str:  # "system|value" (any identifier system, incl. VA ICN)
+        if key not in patients:
+            system, _, value = key.partition("|")
+            patients[key] = assistant.resolve_identifier(system, value)
+        return patients[key]
+
     rows = []
     for case in gold["cases"]:
+        pid = resolve(case.get("patient") or gold["patient_identifier"])
         user = case.get("user", default_user)
         retrieved = assistant.search(pid, case["question"], user=user, k=assistant.k, agent="eval-harness")
         retrieved_text = " ".join(c["text"] for c in retrieved["results"])
@@ -81,7 +88,8 @@ def run_eval(assistant: ClinicalAssistant, gold_path: str | Path) -> dict:
     strata = defaultdict(list)
     for x in rows:
         strata[x["stratum"]].append(x)
-    attacks = run_scope_attacks(assistant, pid)
+    attacks = run_scope_attacks(assistant, resolve(gold["patient_identifier"])) \
+        if gold.get("scope_attacks", True) else []
     summary = {
         "cases": len(rows),
         "passed": sum(x["passed"] for x in rows),
@@ -96,7 +104,7 @@ def run_eval(assistant: ClinicalAssistant, gold_path: str | Path) -> dict:
         "fabricated_medications": fabricated,
         # Rule of three: zero events in n trials -> 95% upper bound on the true rate is about 3/n.
         "fabricated_rate_95_upper": round(3 / med_statements, 3) if med_statements and not fabricated else None,
-        "scope_attacks_blocked": f"{sum(a['blocked'] for a in attacks)}/{len(attacks)}",
+        "scope_attacks_blocked": f"{sum(a['blocked'] for a in attacks)}/{len(attacks)}" if attacks else "n/a",
         "latency_p50_ms": latencies[len(latencies) // 2],
         "latency_p95_ms": latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))],
         "provider": rows[0]["provider"] if rows else None,

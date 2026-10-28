@@ -29,7 +29,7 @@ _OCR_MARK = re.compile(r"^\[OCR(?: page (\d+))?,? confidence ([0-9.]+)\]\s*", re
 _TOKEN = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
 _STOP = {"the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "is", "was", "what",
          "does", "did", "has", "have", "patient", "patients", "any", "are", "be", "at", "by", "this",
-         "their", "his", "her", "show", "me", "tell", "about", "from", "how"}
+         "their", "his", "her", "show", "me", "tell", "about", "from", "how", "taking", "being"}
 
 # Lay / clinical phrasing -> terms that actually appear in VistA-derived records.
 SYNONYMS = {
@@ -52,6 +52,8 @@ SYNONYMS = {
     "followup": ["follow", "cardiology", "referral"],
     "plan": ["discharge", "follow", "referral"],
     "eligibility": ["service", "connected", "eligibility", "veteran"],
+    "current": ["active"], "currently": ["active"],
+    "latest": ["most", "recent"], "last": ["most", "recent"], "vaccine": ["immunization"],
 }
 
 
@@ -87,8 +89,15 @@ def _concept_text(cc: dict | None) -> str:
     return cc.get("text") or next((c.get("display") or c.get("code") for c in cc.get("coding", [])), "")
 
 
+def fmt_number(value) -> str:
+    """Clinical precision: at most 2 decimals, no float noise (15.75137816157233 -> 15.75)."""
+    if isinstance(value, float):
+        return f"{round(value, 2):.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
 def _quantity(q: dict) -> str:
-    return f"{q.get('comparator', '')}{q['value']} {q.get('unit', '')}".strip()
+    return f"{q.get('comparator', '')}{fmt_number(q['value'])} {q.get('unit', '')}".strip()
 
 
 def _value(obs: dict) -> str:
@@ -102,7 +111,14 @@ def _value(obs: dict) -> str:
         return f"{_quantity(obs['valueRange']['low'])} to {_quantity(obs['valueRange']['high'])}"
     if "valueRatio" in obs:
         return f"{obs['valueRatio']['numerator']['value']}:{obs['valueRatio']['denominator']['value']}"
+    if obs.get("component"):  # e.g. blood pressure: systolic + diastolic in one observation
+        parts = [f"{_concept_text(c.get('code'))} {_value(c)}" for c in obs["component"]]
+        return "; ".join(p for p in parts if not p.endswith("no value reported")) or "no value reported"
     return "no value reported"
+
+
+def _status(cc: dict | None) -> str:
+    return next((c.get("code", "") for c in (cc or {}).get("coding", [])), "")
 
 
 def _label(source: str) -> str:
@@ -138,6 +154,8 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
         base["trust"] = "hie"
 
     if rtype == "Observation":
+        category = next((c.get("code") for cat in res.get("category", []) for c in cat.get("coding", [])), "laboratory")
+        kind = {"laboratory": "lab", "vital-signs": "vital"}.get(category, "observation")
         flag = next((c.get("display") for i in res.get("interpretation", []) for c in i.get("coding", [])), "")
         rng = (res.get("referenceRange") or [{}])[0].get("text", "")
         date = res.get("effectiveDateTime", "")[:10]
@@ -152,7 +170,7 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
             text += f" [{res['status']}]"
         if res.get("note"):
             text += "; lab comment: " + " ".join(n["text"] for n in res["note"])
-        return [Chunk(f"{ref}", kind="lab", text=text + ".", date=date, **base)]
+        return [Chunk(f"{ref}", kind=kind, text=text + ".", date=date, **base)]
 
     if rtype == "DiagnosticReport":
         if not res.get("conclusion"):
@@ -175,9 +193,34 @@ def resource_to_chunks(res: dict) -> list[Chunk]:
 
     if rtype == "Condition":
         onset = res.get("onsetDateTime", "")[:10]
+        status = _status(res.get("clinicalStatus"))
+        ended = res.get("abatementDateTime", "")[:10]
         text = f"Problem list: {_concept_text(res['code'])}"
-        text += f" (onset {onset})" if onset else ""
+        details = [d for d in (status, f"onset {onset}" if onset else "", f"resolved {ended}" if ended else "") if d]
+        text += f" ({', '.join(details)})" if details else ""
         return [Chunk(ref, kind="problem", text=text + ".", date=onset, **base)]
+
+    if rtype == "MedicationRequest":
+        start = res.get("authoredOn", "")[:10]
+        med = _concept_text(res.get("medicationCodeableConcept")) or "unspecified medication"
+        dose = next((d.get("text") for d in res.get("dosageInstruction", []) if d.get("text")), "")
+        text = f"Medication order ({res.get('status', 'unknown')}): {med}"
+        text += f", {dose}" if dose else ""
+        text += f", ordered {start}" if start else ""
+        return [Chunk(ref, kind="medication", text=text + ".", date=start, **base)]
+
+    if rtype == "Immunization":
+        date = res.get("occurrenceDateTime", "")[:10]
+        text = f"Immunization: {_concept_text(res.get('vaccineCode'))}"
+        text += f" ({res['status']})" if res.get("status") not in (None, "completed") else ""
+        text += f" on {date}" if date else ""
+        return [Chunk(ref, kind="immunization", text=text + ".", date=date, **base)]
+
+    if rtype == "Procedure":
+        date = (res.get("performedDateTime") or res.get("performedPeriod", {}).get("start", ""))[:10]
+        text = f"Procedure: {_concept_text(res.get('code'))}"
+        text += f" on {date}" if date else ""
+        return [Chunk(ref, kind="procedure", text=text + ".", date=date, **base)]
 
     if rtype == "MedicationStatement":
         start = res.get("effectivePeriod", {}).get("start", "")[:10]
@@ -251,6 +294,61 @@ def near_duplicate(a: str, b: str, threshold: float = 0.8) -> bool:
     return bool(sa and sb) and len(sa & sb) / len(sa | sb) >= threshold
 
 
+SERIES_MIN = 3
+SERIES_SHOWN = 8
+
+
+def _series_key(chunk: Chunk) -> str | None:
+    """What makes two chunks the same measurement / product over time."""
+    if chunk.kind in ("lab", "vital", "observation"):
+        return f"{chunk.kind}:" + re.split(r" [<>=]?-?\d", chunk.text, maxsplit=1)[0].lower()
+    if chunk.kind == "immunization":
+        return "imm:" + chunk.text.split(" on ")[0].lower()
+    if chunk.kind == "medication" and chunk.text.startswith("Medication order"):
+        name = chunk.text.split("): ", 1)[-1].split(",")[0]
+        return "med:" + re.sub(r"[^a-z]+", " ", name.lower()).strip()
+    return None
+
+
+def build_series(chunks: list[Chunk]) -> list[Chunk]:
+    """Layered summary for long records: repeated results of the same lab, vaccine or medication
+    (77 creatinines, 24 refills) collapse into one chunk, newest first with dates, citing the most
+    recent resource. Without this, retrieval returns an arbitrary few of many near-identical
+    chunks and misses the one that answers "most recent" or "current". One-off results are kept
+    as they are."""
+    groups: dict[str, list[Chunk]] = {}
+    out = []
+    for chunk in chunks:
+        key = _series_key(chunk)
+        if key is None:
+            out.append(chunk)
+        else:
+            groups.setdefault(key, []).append(chunk)
+    for members in groups.values():
+        if len(members) < SERIES_MIN:
+            out += members
+            continue
+        members.sort(key=lambda c: c.date or "", reverse=True)
+        latest = members[0]
+        if latest.kind == "medication":
+            label = latest.text.split("): ", 1)[-1].split(",")[0]
+            statuses = re.findall(r"Medication order \(([^)]+)\)", " ".join(c.text for c in members))
+            text = (f"Medication order history for {label}: {len(members)} orders; most recent "
+                    f"({latest.date}) is {statuses[0]}" + (f"; earlier orders {', '.join(sorted(set(statuses[1:])))}"
+                                                            if len(set(statuses)) > 1 else "") + ".")
+        else:
+            name = re.split(r" [<>=]?-?\d", latest.text, maxsplit=1)[0] if latest.kind != "immunization" \
+                else latest.text.split(" on ")[0]
+            shown = [re.sub(r"^.*?(?= [<>=]?-?\d)", "", c.text, count=1).strip().rstrip(".") if c.kind != "immunization"
+                     else (c.date or c.text) for c in members[:SERIES_SHOWN]]
+            text = (f"{name}: {len(members)} results, most recent first: " + "; ".join(shown)
+                    + (f"; {len(members) - SERIES_SHOWN} earlier not shown" if len(members) > SERIES_SHOWN else "") + ".")
+        out.append(Chunk(**{**latest.__dict__, "id": f"{latest.id}#series", "text": text,
+                            "copies": 1, "protected": sorted({p for c in members for p in c.protected}),
+                            "header": f"{latest.header} series history"}))
+    return out
+
+
 class EvidenceIndex:
     """BM25 over evidence chunks, scoped per patient. Swappable for Azure AI Search."""
 
@@ -276,6 +374,15 @@ class EvidenceIndex:
             self._tokens[chunk.id] = Counter(tokenize(f"{chunk.header} {chunk.text}"))
             self._by_patient[chunk.patient].add(chunk.id)
             self._by_resource[ref].add(chunk.id)
+
+    def add_patient_chunks(self, patient: str, chunks: list[Chunk]) -> None:
+        """Index one patient's whole record at once (on-demand path), so series can be built."""
+        for chunk in build_series(chunks):
+            chunk.header = chunk.header or chunk.kind
+            self.chunks[chunk.id] = chunk
+            self._tokens[chunk.id] = Counter(tokenize(f"{chunk.header} {chunk.text}"))
+            self._by_patient[chunk.patient].add(chunk.id)
+            self._by_resource[chunk.resource.split("#")[0]].add(chunk.id)
 
     def drop_patient(self, patient: str) -> None:
         for cid in self._by_patient.pop(patient, set()):
