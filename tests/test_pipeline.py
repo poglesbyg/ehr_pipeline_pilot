@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -130,8 +131,21 @@ class TransportTests(unittest.TestCase):
         pid = bundle["entry"][0]["resource"]["id"]
         labs = self.get(f"/fhir/Observation?patient={pid}&category=laboratory")
         self.assertEqual(labs["total"], 8)
-        answer = self.post("/ai/ask", json.dumps({"patient": pid, "question": "potassium"}))
+        launch = urllib.request.Request(self.base + "/launch", method="POST",
+                                        data=json.dumps({"user": "dr-primary", "icn": ICN.split("|")[1]}).encode())
+        with urllib.request.urlopen(launch) as r:
+            cookie = r.headers["Set-Cookie"].split(";")[0]
+            self.assertEqual(json.load(r)["patient"], pid)
+        ask = urllib.request.Request(self.base + "/ai/ask", method="POST", headers={"Cookie": cookie},
+                                     data=json.dumps({"question": "potassium", "patient": "someone-else"}).encode())
+        with urllib.request.urlopen(ask) as r:
+            answer = json.load(r)
         self.assertIn("5.6", answer["answer"])
+        self.assertEqual(answer["patient"], f"Patient/{pid}")  # body "patient" ignored: scope is the launch's
+        with self.assertRaises(urllib.error.HTTPError) as no_launch:
+            self.post("/ai/ask", json.dumps({"question": "potassium"}))
+        self.assertEqual(no_launch.exception.code, 401)
+        no_launch.exception.close()
         self.assertTrue(self.get("/fhir/AuditEvent")["total"] >= 1)
         self.assertEqual(self.get("/fhir/metadata")["fhirVersion"], "4.0.1")
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.request
 from typing import Protocol
 
@@ -77,17 +79,65 @@ class ExtractiveProvider:
         return " ".join(out)
 
 
+# Entra ID token audience for Azure OpenAI in Azure Government (commercial is
+# https://cognitiveservices.azure.com/.default). Commercial defaults fail in Government.
+AZURE_GOV_SCOPE = "https://cognitiveservices.azure.us/.default"
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
 class AzureOpenAIProvider:
+    """Azure OpenAI chat completions.
+
+    Auth, in order of preference: a ``token_provider`` callable (e.g. azure-identity's
+    ``get_bearer_token_provider(DefaultAzureCredential(authority=AZURE_GOVERNMENT), AZURE_GOV_SCOPE)``
+    backed by a managed identity), then ``AZURE_OPENAI_AD_TOKEN``, then an API key for local
+    testing only. In deployment keys are disabled on the resource. Throttling (429) and transient
+    5xx are retried with backoff, honoring Retry-After; the served model version is recorded.
+    """
+
     name = "azure-openai"
 
     def __init__(self, endpoint: str | None = None, deployment: str | None = None,
-                 api_key: str | None = None, api_version: str = "2024-10-21", timeout: float = 30):
+                 api_key: str | None = None, api_version: str | None = None, timeout: float = 30,
+                 token_provider=None, max_retries: int = 3, backoff: float = 1.0, sleep=time.sleep):
         self.endpoint = (endpoint or os.environ["AZURE_OPENAI_ENDPOINT"]).rstrip("/")
         self.deployment = deployment or os.environ["AZURE_OPENAI_DEPLOYMENT"]
-        # Prefer managed identity / Entra ID tokens in deployment; a key keeps the pilot simple.
-        self.api_key = api_key or os.environ["AZURE_OPENAI_API_KEY"]
-        self.api_version = api_version
+        self.token_provider = token_provider
+        self.ad_token = os.environ.get("AZURE_OPENAI_AD_TOKEN")
+        self.api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY")
+        if not (token_provider or self.ad_token or self.api_key):
+            raise ValueError("no Azure OpenAI credential: pass token_provider, set AZURE_OPENAI_AD_TOKEN, "
+                             "or (local testing only) AZURE_OPENAI_API_KEY")
+        self.api_version = api_version or os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
         self.timeout = timeout
+        self.max_retries, self.backoff, self._sleep = max_retries, backoff, sleep
+        self.last_model: str | None = None
+        self.retries = 0
+
+    def _auth_header(self) -> dict:
+        if self.token_provider:
+            return {"Authorization": f"Bearer {self.token_provider()}"}
+        if self.ad_token:
+            return {"Authorization": f"Bearer {self.ad_token}"}
+        return {"api-key": self.api_key}
+
+    def _post(self, url: str, body: dict) -> dict:
+        for attempt in range(self.max_retries + 1):
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", **self._auth_header()})
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.load(resp)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in RETRY_STATUS or attempt == self.max_retries:
+                    raise
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                delay = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() \
+                    else self.backoff * 2 ** attempt
+                exc.close()
+                self.retries += 1
+                self._sleep(min(delay, 30))
+        raise RuntimeError("unreachable")
 
     def answer(self, question: str, evidence: list[Chunk]) -> str:
         body = {
@@ -100,10 +150,8 @@ class AzureOpenAIProvider:
         }
         url = (f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions"
                f"?api-version={self.api_version}")
-        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                     headers={"Content-Type": "application/json", "api-key": self.api_key})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            payload = json.load(resp)
+        payload = self._post(url, body)
+        self.last_model = payload.get("model")  # e.g. "gpt-4o-2024-08-06": goes into the audit record
         return payload["choices"][0]["message"]["content"].strip()
 
 
@@ -123,6 +171,7 @@ class OllamaProvider:
         # Hidden reasoning eats the output budget and adds latency; gpt-oss can only lower it.
         self.think = think if think is not None else ("low" if self.model.startswith("gpt-oss") else False)
         self.name = f"ollama:{self.model}"
+        self.last_model: str | None = None
 
     def answer(self, question: str, evidence: list[Chunk]) -> str:
         body = {
@@ -139,6 +188,7 @@ class OllamaProvider:
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.load(resp)
+        self.last_model = payload.get("model")
         text = re.sub(r"<think>.*?</think>", "", payload["message"]["content"], flags=re.S).strip()
         if not text:
             raise RuntimeError(f"{self.model} returned no answer (done_reason={payload.get('done_reason')})")
@@ -148,7 +198,8 @@ class OllamaProvider:
 def make_provider(name: str = "auto", model: str | None = None) -> Provider:
     """``auto`` picks Azure if configured, then Ollama if ``OLLAMA_MODEL`` is set, else extractive."""
     if name == "auto":
-        if os.environ.get("AZURE_OPENAI_ENDPOINT") and os.environ.get("AZURE_OPENAI_API_KEY"):
+        if os.environ.get("AZURE_OPENAI_ENDPOINT") and (os.environ.get("AZURE_OPENAI_AD_TOKEN")
+                                                         or os.environ.get("AZURE_OPENAI_API_KEY")):
             return AzureOpenAIProvider()
         if os.environ.get("OLLAMA_MODEL"):
             return OllamaProvider(model)

@@ -3,9 +3,11 @@
 Input side: evidence from outside VA (faxes, HIE documents) is untrusted text. Chunks that
 read like instructions to an AI are quarantined before they reach the prompt.
 
-Output side: every sentence must cite evidence, every number in a sentence must appear in
-the evidence it cites, and direct identifiers are scrubbed. Unsupported sentences are
-removed (strict mode) or marked, and the result carries a groundedness score.
+Output side: every sentence must cite evidence, every number and every medication named in a
+sentence must appear in the evidence it cites, and direct identifiers are scrubbed.
+Unsupported sentences are removed (strict mode) or marked, and the result carries a
+groundedness score and a fabricated-medication count. These checks are deterministic code, so
+they hold no matter which model, or which model version, wrote the answer.
 """
 
 from __future__ import annotations
@@ -25,6 +27,47 @@ _SSN = re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b")
 _CITE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")  # [1], [1, 2]
 _NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\[])")
+_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
+def split_statements(answer: str) -> list[str]:
+    """Statements to verify: sentences, with each line and list item its own statement. Models
+    often answer in bullets; treating a list as one sentence would let one citation vouch for
+    every item. Header lines ending in ':' are structure, not claims, and are dropped."""
+    out = []
+    for line in answer.splitlines():
+        line = _BULLET.sub("", line).strip()
+        if not line or (line.endswith(":") and not _CITE.search(line)):
+            continue
+        out += [s.strip() for s in _SENTENCE.split(line) if s.strip()]
+    return out
+# Medication names a summary might contain, as ingredient -> brand names. Matching is on the
+# ingredient after brand normalization. A production system normalizes through RxNorm (RxNav)
+# instead of a table; the check itself stays the same.
+DRUGS = {
+    "furosemide": ["lasix"], "torsemide": ["demadex"], "bumetanide": ["bumex"],
+    "lisinopril": ["zestril", "prinivil"], "losartan": ["cozaar"], "valsartan": ["diovan"],
+    "sacubitril": ["entresto"], "carvedilol": ["coreg"], "metoprolol": ["toprol", "lopressor"],
+    "spironolactone": ["aldactone"], "eplerenone": ["inspra"], "digoxin": ["lanoxin"],
+    "amlodipine": ["norvasc"], "hydrochlorothiazide": ["hctz"], "empagliflozin": ["jardiance"],
+    "dapagliflozin": ["farxiga"], "metformin": ["glucophage"], "insulin": ["lantus", "humalog"],
+    "glipizide": ["glucotrol"], "semaglutide": ["ozempic"], "atorvastatin": ["lipitor"],
+    "rosuvastatin": ["crestor"], "aspirin": [], "clopidogrel": ["plavix"], "warfarin": ["coumadin"],
+    "apixaban": ["eliquis"], "rivaroxaban": ["xarelto"], "heparin": [], "penicillin": [],
+    "amoxicillin": [], "sulfamethoxazole": ["bactrim"], "naltrexone": ["vivitrol"],
+    "buprenorphine": ["suboxone"], "methadone": [], "gabapentin": ["neurontin"],
+    "prednisone": [], "levothyroxine": ["synthroid"], "omeprazole": ["prilosec"],
+    "albuterol": [], "tamsulosin": ["flomax"], "sertraline": ["zoloft"], "trazodone": [],
+}
+_BRAND = {brand: ingredient for ingredient, brands in DRUGS.items() for brand in brands}
+_WORD = re.compile(r"[a-z]+")
+
+
+def medications_in(text: str) -> set[str]:
+    words = _WORD.findall(text.lower())
+    return {w for w in words if w in DRUGS} | {_BRAND[w] for w in words if w in _BRAND}
+
+
 _DIRECTIVE = re.compile(r"\b(you should|recommend (starting|stopping|prescribing)|start (him|her|them) on)\b", re.I)
 
 
@@ -61,6 +104,8 @@ class OutputCheck:
     removed: int
     phi_redactions: int
     flags: list[str]
+    fabricated_medications: int = 0
+    medication_statements: int = 0
 
     def to_json(self) -> dict:
         return {
@@ -68,6 +113,8 @@ class OutputCheck:
             "sentences_total": len(self.sentences),
             "sentences_removed": self.removed,
             "phi_redactions": self.phi_redactions,
+            "medication_statements": self.medication_statements,
+            "fabricated_medications": self.fabricated_medications,
             "flags": self.flags,
             "unsupported": [s.__dict__ for s in self.sentences if not s.supported],
         }
@@ -84,7 +131,11 @@ def check_output(answer: str, evidence: list[Chunk], *, strict: bool = True) -> 
     if _DIRECTIVE.search(answer):
         flags.append("contains treatment directive; summaries must describe, not prescribe")
     checks: list[SentenceCheck] = []
-    for raw in (s.strip() for s in _SENTENCE.split(answer.strip()) if s.strip()):
+    med_statements = fabricated = 0
+    # "Fabricated" means named nowhere in the evidence the model was given. A real medication
+    # cited to the wrong source (or not cited) is still removed, but it is a citation error.
+    available = medications_in(" ".join(c.text for c in evidence))
+    for raw in split_statements(answer):
         cites = [int(n) for group in _CITE.findall(raw) for n in group.split(",")]
         reasons = []
         if raw.lower().startswith("not found in the record"):
@@ -102,6 +153,13 @@ def check_output(answer: str, evidence: list[Chunk], *, strict: bool = True) -> 
         missing = _numbers(claim) - _numbers(cited_text)
         if cites and missing:
             reasons.append(f"numbers not in cited evidence: {sorted(missing)}")
+        if (meds := medications_in(claim)):
+            med_statements += 1
+            if (invented := meds - available):
+                fabricated += 1
+                reasons.append(f"fabricated medication (in no evidence): {sorted(invented)}")
+            elif cites and (miscited := meds - medications_in(cited_text)):
+                reasons.append(f"medications not in cited evidence: {sorted(miscited)}")
         checks.append(SentenceCheck(raw, cites, not reasons, reasons))
     supported = [c for c in checks if c.supported]
     total = len(checks) or 1
@@ -110,4 +168,7 @@ def check_output(answer: str, evidence: list[Chunk], *, strict: bool = True) -> 
     removed = len(checks) - len(kept)
     if removed:
         flags.append(f"{removed} unsupported sentence(s) removed")
-    return OutputCheck(text, checks, round(len(supported) / total, 3), removed, phi_count, flags)
+    if fabricated:
+        flags.append(f"{fabricated} statement(s) named a medication absent from cited evidence")
+    return OutputCheck(text, checks, round(len(supported) / total, 3), removed, phi_count, flags,
+                       fabricated, med_statements)

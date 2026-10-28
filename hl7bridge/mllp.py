@@ -81,6 +81,8 @@ class MLLPServer:
                 self._loop.run_until_complete(self._serve())
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._loop.close()
 
         threading.Thread(target=run, name="mllp", daemon=True).start()
         self._ready.wait(5)

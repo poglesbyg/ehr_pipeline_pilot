@@ -25,8 +25,8 @@ class CcdaMappingTests(unittest.TestCase):
         self.assertFalse(has_errors(validate_bundle(self.bundle)))
         counts = {t: len(of_type(self.bundle, t)) for t in
                   ("Patient", "AllergyIntolerance", "Condition", "MedicationStatement", "Observation", "Provenance")}
-        self.assertEqual(counts, {"Patient": 1, "AllergyIntolerance": 1, "Condition": 3,
-                                  "MedicationStatement": 3, "Observation": 2, "Provenance": 1})
+        self.assertEqual(counts, {"Patient": 1, "AllergyIntolerance": 1, "Condition": 4,
+                                  "MedicationStatement": 4, "Observation": 2, "Provenance": 1})
 
     def test_patient_matched_on_icn_without_overwriting(self):
         entry = next(e for e in self.bundle["entry"] if e["resource"]["resourceType"] == "Patient")
@@ -75,7 +75,7 @@ class CcdaIngestTests(unittest.TestCase):
         self.assertEqual(len(after), 1)
         self.assertEqual(after[0]["meta"]["versionId"], before["meta"]["versionId"])  # demographics untouched
         conditions = self.store.search("Condition", {"patient": before["id"]})
-        self.assertEqual(len(conditions), 3)
+        self.assertEqual(len(conditions), 4)
         counts = self.store.counts()
         self.assertEqual(ingest(self.store, CCD)["status"], "duplicate")
         self.assertEqual(self.store.counts(), counts)
@@ -92,7 +92,7 @@ class CcdaIngestTests(unittest.TestCase):
         ingest(self.store, CCD)
         assistant = ClinicalAssistant(self.store)
         pid = self.store.search("Patient", {"identifier": ICN})[0]["id"]
-        r = assistant.ask(pid, "allergies")
+        r = assistant.ask(pid, "allergies", user="dr-primary")
         sulfa = next(c for c in r["citations"] if "sulfamethoxazole" in c["text"].lower())
         self.assertEqual(sulfa["trust"], "hie")
         self.assertTrue(sulfa["label"].startswith("C-CDA · TRCH-CCD-20260902-7781"))

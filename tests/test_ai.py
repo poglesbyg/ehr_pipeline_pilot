@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+from hl7bridge.ai.access import ALL_PATIENTS, AccessDenied, AccessPolicy, Clinician
 from hl7bridge.ai.assistant import ClinicalAssistant
 from hl7bridge.ai.evaluate import run_eval
 from hl7bridge.ai.guardrails import check_output, screen_evidence
@@ -47,6 +48,11 @@ class GuardrailTests(unittest.TestCase):
         r = check_output("A1c was 8.9 % on 2026-10-23 [1].", dated)
         self.assertEqual(r.groundedness, 0.0)  # a date the evidence doesn't carry is still caught
 
+    def test_bulleted_answers_are_verified_item_by_item(self):
+        r = check_output("Medications:\n* Potassium is 5.6 mmol/L [1]\n* Creatinine is 1.9 mg/dL [1]", self.EVIDENCE)
+        self.assertEqual([s.text for s in r.sentences], ["Potassium is 5.6 mmol/L [1]", "Creatinine is 1.9 mg/dL [1]"])
+        self.assertEqual(r.groundedness, 0.5)  # the second item cites the wrong source
+
     def test_non_strict_marks_instead_of_removing(self):
         r = check_output("The patient is stable.", self.EVIDENCE, strict=False)
         self.assertIn("[unverified]", r.answer)
@@ -82,21 +88,25 @@ class AssistantTests(unittest.TestCase):
         cls.store.close()
 
     def test_citations_trace_to_hl7_segments(self):
-        r = self.assistant.ask(self.pid, "kidney function")
+        r = self.assistant.ask(self.pid, "kidney function", user="dr-primary")
         sources = {c["source"] for c in r["citations"]}
         self.assertIn("urn:hl7v2:999:999-LAB-0042#OBX[7]", sources)
 
     def test_retrieval_is_patient_scoped(self):
-        other = self.store.create({"resourceType": "Patient", "identifier": [{"system": "x", "value": "1"}]})
-        self.assistant.reindex()
-        r = self.assistant.ask(other["id"], "potassium creatinine allergy")
+        other = self.store.create({"resourceType": "Patient", "identifier": [
+            {"system": self.assistant.icn_system, "value": "1000000002V000002"}]})
+        with self.assertRaises(AccessDenied):  # not on dr-primary's panel: refused before retrieval
+            self.assistant.ask(other["id"], "potassium", user="dr-primary")
+        # Even a clinician allowed to see everyone gets only the requested patient's evidence.
+        everyone = AccessPolicy({"qa": Clinician("qa", "QA reviewer", frozenset({ALL_PATIENTS}))})
+        r = ClinicalAssistant(self.store, policy=everyone).ask(other["id"], "potassium creatinine allergy", user="qa")
         self.assertEqual(r["citations"], [])
         self.assertTrue(r["answer"].startswith("Not found"))
 
     def test_outside_only_sentences_are_attributed_in_code(self):
-        echo = self.assistant.ask(self.pid, "What did the outside cardiologist find on echo?")["answer"]
+        echo = self.assistant.ask(self.pid, "What did the outside cardiologist find on echo?", user="dr-primary")["answer"]
         self.assertIn("(outside record, OCR) [", echo)
-        k = self.assistant.ask(self.pid, "potassium")["answer"]
+        k = self.assistant.ask(self.pid, "potassium", user="dr-primary")["answer"]
         self.assertNotIn("outside record", k)  # VA-sourced sentences stay untagged
 
     def test_merged_identity_is_searched(self):
@@ -104,7 +114,7 @@ class AssistantTests(unittest.TestCase):
 
     def test_every_question_is_audited(self):
         before = len(self.store.search("AuditEvent", {}))
-        self.assistant.ask(self.pid, "allergies", user="dr-test")
+        self.assistant.ask(self.pid, "allergies", user="dr-primary")
         self.assertEqual(len(self.store.search("AuditEvent", {})), before + 1)
 
     def test_provider_failure_falls_back_to_grounded_baseline(self):
@@ -115,7 +125,7 @@ class AssistantTests(unittest.TestCase):
                 raise TimeoutError
 
         assistant = ClinicalAssistant(self.store, Down())
-        r = assistant.ask(self.pid, "potassium")
+        r = assistant.ask(self.pid, "potassium", user="dr-primary")
         self.assertIn("fallback", r["provider"])
         self.assertIn("5.6", r["answer"])
 

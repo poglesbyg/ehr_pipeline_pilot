@@ -66,6 +66,10 @@
         <effectiveTime><low value="20250820"/></effectiveTime>
         <value xsi:type="CD" code="N18.31" codeSystem="2.16.840.1.113883.6.90" displayName="Chronic kidney disease, stage 3a"/>
       </observation></entryRelationship></act></entry>
+      <entry><act classCode="ACT" moodCode="EVN"><entryRelationship typeCode="SUBJ"><observation classCode="OBS" moodCode="EVN">
+        <effectiveTime><low value="20230510"/></effectiveTime>
+        <value xsi:type="CD" code="F10.21" codeSystem="2.16.840.1.113883.6.90" displayName="Alcohol dependence, in remission"/>
+      </observation></entryRelationship></act></entry>
     </section></component>
 
     <component><section>
@@ -94,6 +98,14 @@
         <effectiveTime xsi:type="IVL_TS"><low value="20180602"/></effectiveTime>
         <consumable><manufacturedProduct><manufacturedMaterial>
           <code code="861007" codeSystem="2.16.840.1.113883.6.88" displayName="metformin hydrochloride 500 MG Oral Tablet"/>
+        </manufacturedMaterial></manufacturedProduct></consumable>
+      </substanceAdministration></entry>
+      <entry><substanceAdministration classCode="SBADM" moodCode="EVN">
+        <text>Naltrexone 50 mg by mouth daily</text>
+        <statusCode code="active"/>
+        <effectiveTime xsi:type="IVL_TS"><low value="20230510"/></effectiveTime>
+        <consumable><manufacturedProduct><manufacturedMaterial>
+          <code code="7243" codeSystem="2.16.840.1.113883.6.88" displayName="naltrexone"/>
         </manufacturedMaterial></manufacturedProduct></consumable>
       </substanceAdministration></entry>
     </section></component>
