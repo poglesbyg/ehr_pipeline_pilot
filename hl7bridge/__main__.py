@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", default=":memory:")
     p.add_argument("--seed", action="store_true", help="load the synthetic sample feeds on start")
     p.add_argument("--allow-write", action="store_true", help="expose ingest_hl7v2 / ingest_ccda tools")
+    _add_provider_args(p)
     p = sub.add_parser("eval")
     p.add_argument("--gold", default=str(ROOT / "eval" / "gold.json"))
     p.add_argument("--out", help="default: eval/report.md, or eval/report-<provider>.md for hosted/local models")
@@ -111,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "mcp":
         # stdout is the protocol channel: nothing else may print there.
-        app = App(FhirStore(args.db), BridgeConfig.from_env(), provider_from_env())
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
         if args.seed:
             _seed(app, quiet=True)
         McpServer(app, allow_write=args.allow_write).serve()

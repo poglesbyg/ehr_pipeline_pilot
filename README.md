@@ -96,6 +96,9 @@ Register it with Claude Code from the repo root:
 claude mcp add hl7bridge -e PYTHONPATH="$PWD" -- python3 -m hl7bridge mcp --seed
 ```
 
+Add `--provider ollama --model gemma4:26b` to have `ask_record` answer with a local model
+instead of the extractive baseline. The same guardrails apply either way.
+
 Any other MCP client uses the same command (`python3 -m hl7bridge mcp --seed`, with
 `PYTHONPATH` set to the repo). The server is tested with protocol-level unit tests and
 end to end with the official MCP Python SDK client.
