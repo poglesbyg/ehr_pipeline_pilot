@@ -19,6 +19,47 @@ equivalents.
 > All data is synthetic. "James Alan Veteran" is fictional, and so are the ICN, DFN, SSN
 > and clinical content. This is a demonstration, not a VA system.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    vista["VistA<br/>HL7 v2 over MLLP"]
+    oracle["Oracle Health<br/>FHIR R4"]
+    hie["HIE partners<br/>C-CDA"]
+    fax["Community faxes<br/>OCR + confidence"]
+
+    subgraph ingest["Ingestion"]
+        pipeline["Parse · map to US Core<br/>validate · label 7332<br/>ACK / NAK to sender"]
+        store[("FHIR store<br/>versioned · Provenance<br/>redacted ledger")]
+        pipeline --> store
+    end
+
+    subgraph orch["Orchestrator: scope and citations enforced in code"]
+        authz["1 · Access check<br/>clinician ↔ patient · ICN validated"]
+        retrieve["2 · Scoped retrieval<br/>on-demand index · identity + 7332 filter"]
+        recheck["3 · Second scope check<br/>fail closed"]
+        screen["4 · Screen evidence<br/>quarantine injection"]
+        generate["5 · Generate<br/>numbered, dated evidence"]
+        verify["6 · Verify each sentence<br/>citation · numbers · medications"]
+        authz --> retrieve --> recheck --> screen --> generate --> verify
+    end
+
+    users["Clinician dashboard<br/>(server-side launch)<br/>or AI agent over MCP"]
+    providers{{"Models<br/>extractive · Ollama · Azure OpenAI Gov"}}
+    audit[("AuditEvent<br/>who · patient · query ·<br/>evidence · model version")]
+
+    fax & hie & oracle & vista --> pipeline
+    store --> retrieve
+    generate <--> providers
+    verify -->|"cited answer,<br/>each claim one click<br/>from its source"| users
+    orch -.-> audit
+```
+
+Every citation in an answer resolves back through the FHIR resource to the exact source:
+`VistA LAB · 999-LAB-0042 · OBX[7]`, or `C-CDA · TRCH-CCD-… · medications/entry[2]`. The
+step-by-step design, with the code and test behind each box, is in
+[`docs/DESIGN_WALKTHROUGH.md`](docs/DESIGN_WALKTHROUGH.md).
+
 ---
 
 ## Two-minute demo
