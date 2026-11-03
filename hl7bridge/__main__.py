@@ -56,14 +56,24 @@ def _provider(args):
     return make_provider(args.provider, args.model)
 
 
+def _index(args):
+    """``--index azure-search`` swaps the local BM25 index for Azure AI Search (env-configured)."""
+    if getattr(args, "index", "local") == "azure-search":
+        from .ai.azure_search import from_env
+        return from_env()
+    return None
+
+
 def _add_provider_args(p) -> None:
     p.add_argument("--provider", default="auto", choices=["auto", "extractive", "azure-openai", "ollama"],
                    help="auto: Azure if configured, else Ollama if OLLAMA_MODEL is set, else extractive")
     p.add_argument("--model", help="Ollama model (e.g. llama3.1:8b) or Azure deployment name")
+    p.add_argument("--index", default="local", choices=["local", "azure-search"],
+                   help="evidence index: local BM25, or Azure AI Search (AZURE_SEARCH_ENDPOINT)")
 
 
 def _loaded_app(args) -> App:
-    app = App(FhirStore(), BridgeConfig.from_env(), _provider(args))
+    app = App(FhirStore(), BridgeConfig.from_env(), _provider(args), _index(args))
     _seed(app, quiet=True)
     return app
 
@@ -111,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(asctime)s %(name)s %(message)s")
 
     if args.cmd == "serve":
-        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args), _index(args))
         mllp = MLLPServer(lambda text: app.pipeline.process(text).ack, args.host, args.mllp_port).start_in_thread()
         httpd = serve_http(app, args.host, args.http_port)
         if args.seed:
@@ -131,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "mcp":
         # stdout is the protocol channel: nothing else may print there.
-        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args))
+        app = App(FhirStore(args.db), BridgeConfig.from_env(), _provider(args), _index(args))
         if args.seed:
             _seed(app, quiet=True)
         McpServer(app, allow_write=args.allow_write, launch_icn=args.launch_icn, user=args.user).serve()

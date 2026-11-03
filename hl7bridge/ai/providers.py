@@ -106,8 +106,9 @@ class AzureOpenAIProvider:
         self.ad_token = os.environ.get("AZURE_OPENAI_AD_TOKEN")
         self.api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY")
         if not (token_provider or self.ad_token or self.api_key):
-            raise ValueError("no Azure OpenAI credential: pass token_provider, set AZURE_OPENAI_AD_TOKEN, "
-                             "or (local testing only) AZURE_OPENAI_API_KEY")
+            # No secret configured: Entra ID via managed identity (in Azure) or `az login` (laptop).
+            from ..azure_auth import TokenProvider
+            self.token_provider = TokenProvider("openai")
         self.api_version = api_version or os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
         self.timeout = timeout
         self.max_retries, self.backoff, self._sleep = max_retries, backoff, sleep
@@ -198,8 +199,7 @@ class OllamaProvider:
 def make_provider(name: str = "auto", model: str | None = None) -> Provider:
     """``auto`` picks Azure if configured, then Ollama if ``OLLAMA_MODEL`` is set, else extractive."""
     if name == "auto":
-        if os.environ.get("AZURE_OPENAI_ENDPOINT") and (os.environ.get("AZURE_OPENAI_AD_TOKEN")
-                                                         or os.environ.get("AZURE_OPENAI_API_KEY")):
+        if os.environ.get("AZURE_OPENAI_ENDPOINT") and os.environ.get("AZURE_OPENAI_DEPLOYMENT"):
             return AzureOpenAIProvider()
         if os.environ.get("OLLAMA_MODEL"):
             return OllamaProvider(model)

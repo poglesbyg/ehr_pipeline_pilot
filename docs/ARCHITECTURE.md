@@ -45,7 +45,7 @@ dependencies, so it can run inside any boundary.
 |---|---|---|
 | `hl7bridge.hl7v2` / `mapper` | Same code, or an integration engine (e.g. Rhapsody, InterSystems HealthShare, Azure Health Data Services `$convert-data`) | Mapping contract is the golden test suite; any engine has to pass it |
 | `store.FhirStore` (SQLite) | Managed FHIR service (Azure Health Data Services FHIR / AWS HealthLake / HAPI on AKS/EKS) | Store speaks standard FHIR transactions, conditional update and FHIRPath Patch |
-| `ai.index.EvidenceIndex` (BM25) | Azure AI Search (hybrid BM25 + vector + semantic ranker) or OpenSearch | Same chunk schema; the patient filter becomes a mandatory security filter |
+| `ai.index.EvidenceIndex` (BM25) | Azure AI Search (hybrid BM25 + vector + semantic ranker) or OpenSearch | **Adapter built** (`ai/azure_search.py`, `--index azure-search`): same chunk schema, patient + 7332 filter applied with `preFilter`; deployable via `infra/azure/main.bicep` |
 | `ai.providers.ExtractiveProvider` | Stays as the always-available fallback and the eval baseline | Hosted models must beat it on the gold set |
 | `ai.providers.AzureOpenAIProvider` | Azure OpenAI in Azure Government via private endpoint, Entra ID auth | Already implemented; config only |
 | `mcp.McpServer` (stdio) | Remote MCP over streamable HTTP behind the API gateway, OAuth 2.1 with SMART on FHIR scopes | Tools, scoping and audit stay the same; only transport and auth change |

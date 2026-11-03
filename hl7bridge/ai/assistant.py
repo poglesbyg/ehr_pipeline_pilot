@@ -71,12 +71,13 @@ def attribute_outside(check, evidence: list[Chunk]) -> str:
 
 class ClinicalAssistant:
     def __init__(self, store: FhirStore, provider: Provider | None = None, *, k: int = 6,
-                 policy: AccessPolicy | None = None, icn_system: str | None = None, cache_ttl: float = 3600):
+                 policy: AccessPolicy | None = None, icn_system: str | None = None, cache_ttl: float = 3600,
+                 index=None):
         self.store = store
         self.provider = provider or ExtractiveProvider(max_sentences=12)
         self.policy = policy or AccessPolicy()
         self.icn_system = icn_system or BridgeConfig().icn_system
-        self.index = EvidenceIndex()
+        self.index = index if index is not None else EvidenceIndex()  # or ai.azure_search.AzureSearchIndex
         self.k = k
         self.cache_ttl = cache_ttl
         self._loaded: dict[str, float] = {}  # Patient/<id> -> monotonic load time

@@ -44,10 +44,11 @@ log = logging.getLogger("hl7bridge.http")
 
 
 class App:
-    def __init__(self, store: FhirStore, config: BridgeConfig | None = None, provider: Provider | None = None):
+    def __init__(self, store: FhirStore, config: BridgeConfig | None = None, provider: Provider | None = None,
+                 index=None):
         self.store = store
         self.config = config or BridgeConfig()
-        self.assistant = ClinicalAssistant(store, provider)
+        self.assistant = ClinicalAssistant(store, provider, index=index)
         self.pipeline = Pipeline(store, self.config, on_commit=self.assistant.reindex)
         self._sessions: dict[str, dict] = {}
         self._lock = threading.Lock()
