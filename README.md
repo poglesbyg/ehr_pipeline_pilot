@@ -108,7 +108,7 @@ python3 -m hl7bridge convert samples/01_adt_a01_admit.hl7 # dry-run: print the F
 python3 -m hl7bridge ask "Was the potassium really elevated?"
 python3 -m hl7bridge eval                                 # writes eval/report.md
 python3 -m hl7bridge mcp --seed                           # MCP server on stdio for AI agents
-python3 -m unittest discover -s tests -t .                # 115 tests, ~6 s
+python3 -m unittest discover -s tests -t .                # 125 tests, ~6 s
 curl -X POST --data-binary @samples/hie/10_ccd_three_rivers.xml http://127.0.0.1:8080/hie/ccda
 docker build -t hl7bridge . && docker run -p 127.0.0.1:8080:8080 hl7bridge
 ```
@@ -173,6 +173,25 @@ only answered by evidence that mentions it. Caveat: the same author built the sy
 gold set (the set was generated before the fixes and only its expected-text format changed
 after), so treat this as a regression suite, not an independent benchmark. Both gold sets run in
 CI.
+
+## Run it on Azure (prototype)
+
+`infra/azure/` deploys Azure OpenAI and Azure AI Search with **keys disabled** (Entra ID
+only), a managed identity with least roles, and, in phase B, Azure OpenAI behind a **private
+endpoint** with **private DNS linked to the VNet**, plus a Container Apps job that runs the eval
+inside the VNet. The pilot switches to Azure with flags; tokens come from `az login` on a
+laptop or the managed identity in Azure:
+
+```bash
+python3 -m hl7bridge eval --provider azure-openai --index azure-search
+```
+
+The AI Search adapter does hybrid keyword + vector retrieval with the patient and 7332 filter
+applied **before** the vector search (`vectorFilterMode: preFilter`), and the assistant's
+second scope check still runs on every hit. A test simulates the service ignoring the filter
+and confirms the leak is refused. Step-by-step deploy, costs, the DNS check and teardown are in
+[`infra/azure/README.md`](infra/azure/README.md). It's tested against mock Azure endpoints and
+compiled with Bicep, but not yet deployed to a live subscription.
 
 ## Use it from an AI agent (MCP)
 
@@ -316,6 +335,7 @@ hl7bridge/
   fhir_client.py  FHIR R4 client: discovery, paging, retry, Binary notes, origin guard
   fhir_import.py  external FHIR record -> store, with lineage, upserts and privacy filtering
   smart.py        SMART App Launch (authorization code + PKCE)
+  azure_auth.py   Entra ID tokens: managed identity / IMDS / Azure CLI, commercial + Government
   sensitivity.py  38 USC 7332 labels (substance use, HIV, sickle cell) applied at ingestion
   validate.py     pre-commit US Core checks -> OperationOutcome
   store.py        SQLite FHIR store: versions, conditional ops, FHIRPath Patch, search
@@ -323,7 +343,8 @@ hl7bridge/
   mllp.py         asyncio MLLP listener + client
   mcp.py          MCP server (stdio JSON-RPC): patient-scoped, audited, read-only by default
   server.py       FHIR REST + HL7-over-HTTP + assistant API + dashboard
-  ai/             access (policy, ICN), index, guardrails, providers, assistant, evaluate
+  ai/             access (policy, ICN), index, azure_search (AI Search adapter), guardrails,
+                  providers, assistant, evaluate
   static/         dashboard
 samples/          14 synthetic VistA-style feeds (tools/generate_samples.py)
 samples/hie/      synthetic C-CDA from a fictional community hospital
@@ -334,4 +355,5 @@ tests/            100 tests: parser, mappings, C-CDA, pipeline, transports, guar
                   (Entra token, 429 retry, mock endpoint), MCP protocol, eval
 .github/          CI: tests on Python 3.10-3.13, eval as a release gate
 Dockerfile        non-root, standard-library-only image
+infra/azure/      Bicep: Azure OpenAI + AI Search, Entra only, private endpoint, VNet runner
 ```

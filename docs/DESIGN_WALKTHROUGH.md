@@ -110,7 +110,14 @@ reveals patients that clinician may see.
 | Model version changes | New behavior on the provider's schedule | Safety checks in code, not in the model; model version in every audit record; side-by-side eval per model | Ollama results in README |
 | Cost creep | Indexing and token cost grow faster than value | Index on demand; small evidence sets; extractive fallback | — |
 
-## 7. Production pattern in Azure Government (designed, not built here)
+## 7. Production pattern in Azure Government
+
+A prototype of this pattern is in `infra/azure/` (Bicep): Azure OpenAI and AI Search with keys
+disabled, a managed identity with least roles, and Azure OpenAI behind a private endpoint with
+private DNS, with the eval running inside the VNet. The pilot's `--index azure-search` uses AI
+Search for hybrid, prefiltered retrieval. The App Service front end and Azure Policy are not
+built.
+
 
 - **Network:** App Service or Container Apps with VNet integration; AI Search, Azure OpenAI,
   storage and Key Vault reached through private endpoints with public network access
